@@ -1,0 +1,32 @@
+========================================================================
+ANSWER
+========================================================================
+Some diagnostic techniques that use Illumina sequencing for bacteria include:
+
+- **Amplicon Sequencing**:
+  - Universal bacterial, fungal, or parasitic rRNA sequencing from multiple body
+fluids and tissues for multiplexed pathogen detection (available clinical test)
+[1].
+  - Multiplexed primer panels for targeted analyses from multiple body fluids
+and tissues (not currently available as a clinical test) [1].
+
+- **Metagenomic Sequencing**:
+  - Blood (plasma) for culture-negative sepsis, endocarditis, febrile
+neutropenia, fever of unknown origin, or monitoring of immunocompromised
+patients (available clinical test) [1].
+  - Respiratory secretions for culture-negative and/or PCR-negative pneumonia
+(available clinical test) [1].
+  - Cerebrospinal fluid for undiagnosed meningitis, encephalitis, or myelitis
+(available clinical test) [1].
+  - Infected tissue or other body fluids for culture-negative infections (not
+currently available as a clinical test) [1].
+
+- **Specific Study Example**:
+  - A study utilized the Illumina Nextseq CN500 sequencer for metagenomic
+sequencing of drainage fluid to diagnose postoperative intra-abdominal
+infections, generating approximately 20 million reads per library [5].
+
+These techniques leverage the high throughput and efficiency of Illumina
+sequencing platforms for the detection and characterization of bacterial
+pathogens in clinical samples.
+========================================================================
