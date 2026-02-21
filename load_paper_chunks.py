@@ -62,7 +62,8 @@ def get_conn(dbname: str):
 # ---------------------------------------------------------------------------
 
 # Matches: B5_PMC2581791.json  or  B5_PMC2581791_chunks.json
-_FILENAME_RE = re.compile(r"^(B\d+)_(PMC\d+)(?:_chunks)?\.json$", re.IGNORECASE)
+# Also matches: B10-animals-14-01578_PMC10904690.json (longer ref_id format)
+_FILENAME_RE = re.compile(r"^(B[\d\-\w]+)_(PMC\d+)(?:_chunks)?\.json$", re.IGNORECASE)
 
 
 def parse_filename(filename: str):
@@ -95,7 +96,7 @@ def get_source_id(cur, doc_key: str) -> int:
     return row[0]
 
 
-def upsert_paper(cur, pmc_id: str, citation_meta: dict) -> int:
+def upsert_paper(cur, pmc_id: str, citation_meta: dict, domain: str = "medical") -> int:
     """
     Insert or update a papers row derived from the citations record.
     Returns papers.id.
@@ -105,8 +106,8 @@ def upsert_paper(cur, pmc_id: str, citation_meta: dict) -> int:
     """
     cur.execute("""
         INSERT INTO papers
-            (doi, pubmed_id, pmc_id, title, authors, journal, year, open_access)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            (doi, pubmed_id, pmc_id, title, authors, journal, year, open_access, domain)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (doi) DO UPDATE SET
             pubmed_id   = COALESCE(EXCLUDED.pubmed_id,  papers.pubmed_id),
             pmc_id      = COALESCE(EXCLUDED.pmc_id,     papers.pmc_id),
@@ -114,7 +115,8 @@ def upsert_paper(cur, pmc_id: str, citation_meta: dict) -> int:
             authors     = COALESCE(EXCLUDED.authors,     papers.authors),
             journal     = COALESCE(EXCLUDED.journal,     papers.journal),
             year        = COALESCE(EXCLUDED.year,        papers.year),
-            open_access = COALESCE(EXCLUDED.open_access, papers.open_access)
+            open_access = COALESCE(EXCLUDED.open_access, papers.open_access),
+            domain      = COALESCE(EXCLUDED.domain,      papers.domain)
         RETURNING id
     """, (
         citation_meta.get("doi") or None,
@@ -125,6 +127,7 @@ def upsert_paper(cur, pmc_id: str, citation_meta: dict) -> int:
         citation_meta.get("journal") or None,
         citation_meta.get("year") or None,
         citation_meta.get("open_access", False),
+        domain,
     ))
     row = cur.fetchone()
     if row:
@@ -139,7 +142,7 @@ def upsert_paper(cur, pmc_id: str, citation_meta: dict) -> int:
     raise RuntimeError(f"Failed to upsert papers row for pmc_id={pmc_id!r}")
 
 
-def upsert_paper_no_doi(cur, pmc_id: str, citation_meta: dict) -> int:
+def upsert_paper_no_doi(cur, pmc_id: str, citation_meta: dict, domain: str = "medical") -> int:
     """
     Upsert a papers row when doi is NULL (use pmc_id as the unique key).
     Returns papers.id.
@@ -156,7 +159,8 @@ def upsert_paper_no_doi(cur, pmc_id: str, citation_meta: dict) -> int:
                 authors     = COALESCE(%s, authors),
                 journal     = COALESCE(%s, journal),
                 year        = COALESCE(%s, year),
-                open_access = COALESCE(%s, open_access)
+                open_access = COALESCE(%s, open_access),
+                domain      = COALESCE(%s, domain)
             WHERE id = %s
         """, (
             citation_meta.get("pubmed_id") or None,
@@ -165,14 +169,15 @@ def upsert_paper_no_doi(cur, pmc_id: str, citation_meta: dict) -> int:
             citation_meta.get("journal") or None,
             citation_meta.get("year") or None,
             citation_meta.get("open_access", False),
+            domain,
             paper_id,
         ))
         return paper_id
 
     cur.execute("""
         INSERT INTO papers
-            (doi, pubmed_id, pmc_id, title, authors, journal, year, open_access)
-        VALUES (NULL, %s, %s, %s, %s, %s, %s, %s)
+            (doi, pubmed_id, pmc_id, title, authors, journal, year, open_access, domain)
+        VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
     """, (
         citation_meta.get("pubmed_id") or None,
@@ -182,6 +187,7 @@ def upsert_paper_no_doi(cur, pmc_id: str, citation_meta: dict) -> int:
         citation_meta.get("journal") or None,
         citation_meta.get("year") or None,
         citation_meta.get("open_access", False),
+        domain,
     ))
     return cur.fetchone()[0]
 
@@ -270,7 +276,7 @@ def insert_paper_chunks(cur, paper_id: int, chunks: list[dict],
 # ---------------------------------------------------------------------------
 
 def process_file(cur, chunk_file: Path, source_id: int,
-                 embeddings_map: dict, replace: bool) -> dict:
+                 embeddings_map: dict, replace: bool, domain: str = "medical") -> dict:
     """
     Process one pmc_chunks JSON file.
     Returns a stats dict: {chunks, linked, skipped_reason}
@@ -296,9 +302,9 @@ def process_file(cur, chunk_file: Path, source_id: int,
     # Upsert the papers row
     doi = citation_meta.get("doi")
     if doi:
-        paper_id = upsert_paper(cur, pmc_id, citation_meta)
+        paper_id = upsert_paper(cur, pmc_id, citation_meta, domain)
     else:
-        paper_id = upsert_paper_no_doi(cur, pmc_id, citation_meta)
+        paper_id = upsert_paper_no_doi(cur, pmc_id, citation_meta, domain)
 
     # Link the citation back to the paper
     linked = link_citation_to_paper(cur, ref_id, source_id, paper_id)
@@ -342,6 +348,11 @@ def main():
     parser.add_argument(
         "--doc-key", default="fcimb-14-1458316",
         help="doc_key of the parent review in review_sources (default: fcimb-14-1458316)",
+    )
+    parser.add_argument(
+        "--domain", default="medical",
+        choices=["medical", "veterinary", "both"],
+        help="Domain classification for papers (default: medical)",
     )
     parser.add_argument(
         "--replace", action="store_true",
@@ -407,7 +418,7 @@ def main():
         skipped       = []
 
         for chunk_file in files:
-            stats = process_file(cur, chunk_file, source_id, embeddings_map, args.replace)
+            stats = process_file(cur, chunk_file, source_id, embeddings_map, args.replace, args.domain)
             if stats["skipped_reason"]:
                 skipped.append((chunk_file.name, stats["skipped_reason"]))
                 print(f"  SKIP  {chunk_file.name}: {stats['skipped_reason']}")

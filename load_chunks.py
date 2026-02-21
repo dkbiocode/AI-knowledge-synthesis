@@ -61,8 +61,8 @@ def upsert_review_source(cur, doc_key: str, meta: dict) -> int:
     cur.execute("""
         INSERT INTO review_sources
             (doc_key, title, authors, journal, year, doi, pubmed_id, pmc_id,
-             open_access, source_type, html_path, pdf_path)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'review', %s, %s)
+             open_access, source_type, domain, html_path, pdf_path)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'review', %s, %s, %s)
         ON CONFLICT (doc_key) DO UPDATE SET
             title       = EXCLUDED.title,
             authors     = EXCLUDED.authors,
@@ -72,6 +72,7 @@ def upsert_review_source(cur, doc_key: str, meta: dict) -> int:
             pubmed_id   = EXCLUDED.pubmed_id,
             pmc_id      = EXCLUDED.pmc_id,
             open_access = EXCLUDED.open_access,
+            domain      = EXCLUDED.domain,
             html_path   = EXCLUDED.html_path,
             pdf_path    = EXCLUDED.pdf_path
         RETURNING id
@@ -85,6 +86,7 @@ def upsert_review_source(cur, doc_key: str, meta: dict) -> int:
         meta.get("pubmed_id"),
         meta.get("pmc_id"),
         meta.get("open_access", False),
+        meta.get("domain", "medical"),
         meta.get("html_path"),
         meta.get("pdf_path"),
     ))
@@ -226,6 +228,9 @@ def main():
     parser.add_argument("--year", type=int, default=2024)
     parser.add_argument("--doi", default="https://doi.org/10.3389/fcimb.2024.1458316")
     parser.add_argument("--pmc-id", default=None)
+    parser.add_argument("--domain", default="medical",
+                        choices=["medical", "veterinary", "both"],
+                        help="Domain classification (default: medical)")
     parser.add_argument("--html-path", default="main-article-body.html")
     parser.add_argument("--pdf-path", default="fcimb-14-1458316.pdf")
 
@@ -281,6 +286,7 @@ def main():
             "doi":        args.doi,
             "pmc_id":     args.pmc_id,
             "open_access": True,   # Frontiers is OA
+            "domain":     args.domain,
             "html_path":  args.html_path,
             "pdf_path":   args.pdf_path,
         }

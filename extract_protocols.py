@@ -199,14 +199,21 @@ Your task: extract structured information about NEXT-GENERATION SEQUENCING (NGS)
 - Bioinformatics pipelines for NGS data analysis
 
 For each distinct NGS diagnostic protocol mentioned:
-1. Identify the protocol type (mNGS, targeted NGS, RT-PCR, serology, etc.)
-2. Extract VERBATIM sentences that describe:
-   - What the method does
-   - Performance metrics (sensitivity, specificity, turnaround time) if stated
-   - Stated limitations
-   - Biological constraints (pathogen biology, sample timing, host factors)
-   - Logistical or regulatory obstacles
-   - Generalizability or applicability statements
+1. Identify the protocol type (mNGS, targeted NGS, WGS, etc.)
+2. Extract VERBATIM sentences that describe each aspect:
+   - **excerpt_method**: What the protocol DOES (methodology, workflow, procedure).
+     Example: "mNGS sequences total nucleic acids from clinical samples"
+     NOT: "mNGS cannot serve as first-line assay due to cost" (this is a limitation)
+   - **excerpt_performance**: Quantitative metrics ONLY (sensitivity %, specificity %, TAT)
+     Example: "detected pathogens in 58% of cases with 95% specificity"
+   - **excerpt_limitations**: Problems, weaknesses, failures of the method
+     Example: "high cost and limited accessibility", "low sensitivity for low-abundance targets"
+   - **excerpt_biology**: Biological constraints (pathogen characteristics, sample timing, host factors)
+     Example: "viral RNA present in blood only 5-6 days after illness onset"
+   - **excerpt_obstacles**: Logistical, regulatory, cost, or infrastructure barriers
+     Example: "not available in counties with risk of infections"
+   - **excerpt_transferability**: Statements about generalizability or applicability
+     Example: "applicable to diverse sample types and pathogen classes"
 3. Assess veterinary transferability:
    - Score 0-3: 0=blocked by fundamental constraints, 1=requires significant modification, 2=likely feasible with minor changes, 3=directly applicable
    - Write a one-sentence summary of veterinary obstacles
@@ -480,6 +487,8 @@ def main():
                         help="Extract from review chunks, paper chunks, or both (default: both)")
     parser.add_argument("--paper-id", type=int, default=None,
                         help="Extract from a single paper only")
+    parser.add_argument("--cluster-id", type=int, default=None,
+                        help="Extract from chunks in a specific cluster only")
     parser.add_argument("--limit", type=int, default=None,
                         help="Limit number of chunks to process (for testing)")
     parser.add_argument("--dry-run", action="store_true",
@@ -499,15 +508,26 @@ def main():
         # Fetch review chunks
         if args.source in ["both", "review"]:
             print("\nFetching review chunks ...")
-            cur.execute("""
-                SELECT id, heading, text, NULL as paper_id
-                FROM review_chunks
-                WHERE text IS NOT NULL AND LENGTH(text) > 50
-                ORDER BY id
-                LIMIT %s
-            """, (args.limit,))
+
+            # Build query with optional cluster filter
+            query = """
+                SELECT rc.id, rc.heading, rc.text, NULL as paper_id
+                FROM review_chunks rc
+            """
+            where_conditions = ["rc.text IS NOT NULL", "LENGTH(rc.text) > 50"]
+
+            if args.cluster_id is not None:
+                query += " JOIN chunk_clusters cc ON cc.chunk_id = 'review_' || rc.id::text AND cc.chunk_type = 'review'"
+                where_conditions.append(f"cc.cluster_id = {args.cluster_id}")
+
+            query += " WHERE " + " AND ".join(where_conditions)
+            query += " ORDER BY rc.id LIMIT %s"
+
+            cur.execute(query, (args.limit,))
             review_chunks = cur.fetchall()
-            print(f"  {len(review_chunks)} review chunks to process")
+
+            cluster_info = f" (cluster {args.cluster_id})" if args.cluster_id is not None else ""
+            print(f"  {len(review_chunks)} review chunks to process{cluster_info}")
 
             if review_chunks:
                 total_protocols += process_chunks(cur, review_chunks, "review", args.model, args.dry_run)
@@ -515,19 +535,29 @@ def main():
         # Fetch paper chunks
         if args.source in ["both", "papers"]:
             print("\nFetching paper chunks ...")
-            where_clause = "WHERE pc.text IS NOT NULL AND LENGTH(pc.text) > 50"
-            if args.paper_id:
-                where_clause += f" AND pc.paper_id = {args.paper_id}"
 
-            cur.execute(f"""
+            # Build query with optional cluster and paper filters
+            query = """
                 SELECT pc.id, pc.heading, pc.text, pc.paper_id
                 FROM paper_chunks pc
-                {where_clause}
-                ORDER BY pc.paper_id, pc.id
-                LIMIT %s
-            """, (args.limit,))
+            """
+            where_conditions = ["pc.text IS NOT NULL", "LENGTH(pc.text) > 50"]
+
+            if args.cluster_id is not None:
+                query += " JOIN chunk_clusters cc ON cc.chunk_id = 'paper_' || pc.id::text AND cc.chunk_type = 'paper'"
+                where_conditions.append(f"cc.cluster_id = {args.cluster_id}")
+
+            if args.paper_id:
+                where_conditions.append(f"pc.paper_id = {args.paper_id}")
+
+            query += " WHERE " + " AND ".join(where_conditions)
+            query += " ORDER BY pc.paper_id, pc.id LIMIT %s"
+
+            cur.execute(query, (args.limit,))
             paper_chunks = cur.fetchall()
-            print(f"  {len(paper_chunks)} paper chunks to process")
+
+            cluster_info = f" (cluster {args.cluster_id})" if args.cluster_id is not None else ""
+            print(f"  {len(paper_chunks)} paper chunks to process{cluster_info}")
 
             if paper_chunks:
                 total_protocols += process_chunks(cur, paper_chunks, "paper", args.model, args.dry_run)

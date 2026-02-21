@@ -1,6 +1,6 @@
 # NGS Knowledge Base — Session Context & Handoff
 
-**Project:** Cross-domain NGS diagnostic protocol knowledge base (medical → veterinary translation)
+**Project:** Cross-domain NGS diagnostic protocol knowledge base (medical ↔ veterinary knowledge sharing)
 **Owner:** David
 **Environment:** `/Users/david/work/informatics_ai_workflow`
 **Database:** PostgreSQL `mngs_kb` (localhost, Homebrew install at `/opt/homebrew/opt/postgresql@16`)
@@ -11,17 +11,17 @@
 ## Project Overview
 
 ### Research Goal
-Build a knowledge base to identify **gaps and transferability** of NGS diagnostic protocols from medical to veterinary practice.
+Build a knowledge base to identify **topic overlap and knowledge sharing opportunities** between NGS diagnostic protocols in medical and veterinary practice.
 
-**Key question:** *"What NGS protocols are used in the medical community, and how do they inform what can be done in the veterinary field?"*
+**Key finding (updated 2026-02-19):** *Medical and veterinary NGS communities show **balanced knowledge convergence** (1.2:1 ratio), using similar technologies and methodologies. Value lies in bidirectional knowledge sharing rather than one-way transfer.*
 
-**Phase 1 (current):** Extract structured protocol records from medical literature
-**Phase 2 (planned):** Ingest veterinary literature, cluster by topic, compute medical-vet gap scores
+**Phase 1:** ✅ COMPLETE - Extract and cluster medical + veterinary literature
+**Phase 2 (current):** Comparative protocol analysis, sub-clustering by application
 **Phase 3 (planned):** Protocol resolution (follow citation chains to external SOPs, protocols.io, CDC guidelines)
 
 ### Intellectual Framework
 
-The **protocol** is the unit of transferability, not the paper. A protocol is:
+The **protocol** is the unit of analysis, not the paper. A protocol is:
 - **Identity:** modality (mNGS, targeted NGS, WGS), pathogen class, specimen type, platform
 - **Context:** typed verbatim excerpts (method, performance, limitations, biology, obstacles)
 - **Transferability:** veterinary applicability score (0-3) + obstacle summary
@@ -30,15 +30,44 @@ Papers cite protocols; protocols accumulate evidence across sources. The `protoc
 
 ---
 
-## Current State (as of 2026-02-19)
+## Current State (as of 2026-02-20 - Phase 2 In Progress)
+
+### Database Summary
+
+**Total content:** 3,248 chunks from 186 papers + 2 reviews
+- **Medical:** 1,769 chunks (54.5%) - 114 papers + 1 review
+- **Veterinary:** 1,479 chunks (45.5%) - 72 papers + 1 review (including Momoi & Matsuu 2020)
+- **Embeddings:** 3,238/3,248 (99.7%)
+- **Administrative content:** Filtered out (966 chunks removed)
+
+**Clustering results:**
+- **2 balanced clusters** (gap scores 0.23-0.31)
+- **Cluster 0:** 2,019 chunks (99.9% NGS content) - 1,118 med / 901 vet
+  - **Sub-clusters:** 2 coherent groups (607 + 22 chunks), 1,390 noise (68.8%)
+  - **Pathogen distribution:** Unknown (57%), Bacteria (14%), Mixed (14%), Virus (11%)
+- **Cluster 1:** 50 chunks (study design) - 27 med / 23 vet
+- **Noise:** 1,203 chunks (36.8% - specialized protocols)
+
+**Protocol extraction:** In progress
+- **Protocols table:** 3 protocols (test extraction from paper_id=104)
+- **Cluster 0 extraction:** Running 100 chunks (estimated 500-1,000 protocols total)
+- **Schema:** 18-field structured extraction with vet transferability scoring
 
 ### What's Built
 
-#### 1. Database Schema (v2)
-- **Core tables (v1):** `review_sources`, `review_chunks`, `papers`, `paper_chunks`, `citations`, `chunk_citations`
-- **New tables (v2):** `protocols`, `protocol_sources`
-- **Migration:** `migrate_v2.sql` applied to live DB; `create_schema.sql` updated for fresh installs
-- **Schema file:** `/Users/david/work/informatics_ai_workflow/create_schema.sql`
+#### 1. Database Schema (v3 - with clustering)
+
+**Core tables (v1):**
+- `review_sources`, `review_chunks`, `papers`, `paper_chunks`, `citations`, `chunk_citations`
+
+**Protocol tables (v2):**
+- `protocols`, `protocol_sources`
+
+**Clustering tables (v3):**
+- `chunk_clusters`, `cluster_gap_scores`, `cluster_representatives`
+
+**Domain tagging:**
+- `papers.domain` and `review_sources.domain` (`'medical' | 'veterinary' | 'both'`)
 
 **Key relationships:**
 ```
@@ -46,58 +75,181 @@ papers ← citations.paper_id
 papers ← paper_chunks.paper_id
 paper_chunks ← protocol_sources.paper_chunk_id → protocols
 review_chunks ← protocol_sources.review_chunk_id → protocols
+paper_chunks ← chunk_clusters.chunk_id → cluster_gap_scores
+review_chunks ← chunk_clusters.chunk_id → cluster_gap_scores
 ```
 
-**Domain tagging:** `papers.domain` and `review_sources.domain` added (`'medical' | 'veterinary' | 'both'`)
-
 #### 2. Data Loaded
-- **Review article:** 1 source (fcimb-14-1458316), 22 chunks, 168 citations (medical NGS review)
-- **Cited papers:** 114 papers, 2,309 chunks (downloaded PMC HTMLs, chunked, embedded, loaded)
-- **Embeddings:** OpenAI `text-embedding-3-small` 1536-dim vectors on all chunks
-- **Protocols extracted:** 3 NGS protocols from 10 test chunks (paper_id=104, OROV paper)
+
+**Medical corpus:**
+- Review: fcimb-14-1458316 (22 chunks, 168 citations)
+- Papers: 114 papers, 1,769 chunks (after admin filtering)
+- Embeddings: 1,787/1,787 (100%)
+
+**Veterinary corpus:**
+- Review: PMC11171117 (20 chunks, 122 citations)
+- Papers: 71 papers, 1,465 chunks (after admin filtering)
+- Embeddings: 1,485/1,485 (100%)
+
+**Protocols extracted:**
+- 3 protocols from test run (paper_id=104)
+- Full extraction pending on Cluster 0
+
+**Clustering:**
+- 3,272 chunks clustered into 2 main clusters + noise
+- UMAP 2D projections stored in `chunk_clusters` table
+- Gap scores computed and stored in `cluster_gap_scores`
 
 #### 3. Extractors Package (`extractors/`)
+
 Refactored chunking into source-agnostic interface:
-- **`extractors/base.py`:** Abstract `BaseExtractor` class (defines `chunk()`, `extract_refs()`, `html_fragment()`)
-- **`extractors/pmc.py`:** PMC HTML extractor (handles both `B`-style and `R`-style ref IDs)
+- **`extractors/base.py`:** Abstract `BaseExtractor` class
+- **`extractors/pmc.py`:** PMC HTML extractor (handles B-style and R-style ref IDs)
+  - **New:** `filter_admin=True` parameter to skip administrative sections
 - **`extractors/__init__.py`:** Package exports
 
-**Tested on:**
-- Main review: 22 chunks, 168 refs
-- B80 (PMC12520762): 14 chunks, 23 refs
+**Admin filtering:**
+- `admin_blacklist.py` - 20+ regex patterns for administrative sections
+- Filters: ethics, consent, funding, conflicts, data availability, etc.
+- **Impact:** Reduces chunk count by ~23%, improves clustering quality
 
-#### 4. Protocol Extraction (`extract_protocols.py`)
-LLM-powered structured extraction using OpenAI's JSON schema mode:
-- **Model:** `gpt-4o-mini` (default)
-- **Schema:** 18-field protocol schema with typed verbatim excerpts
-- **NGS focus:** Prompt explicitly excludes RT-PCR, serology, culture (NGS-only extraction)
-- **Output:** Populates `protocols` + `protocol_sources` tables
-- **Deduplication:** Finds existing protocols by identity match (modality + pathogen + specimen + platform)
+#### 4. Pipeline Scripts
 
-**Extraction fields:**
-- Identity: `ngs_modality`, `pathogen_class`, `clinical_context`, `specimen_type`, `platform`, `bioinformatics_pipeline`
-- Performance: `sensitivity`, `specificity`, `turnaround_hours`
-- Typed excerpts: `excerpt_method`, `excerpt_performance`, `excerpt_limitations`, `excerpt_biology`, `excerpt_obstacles`, `excerpt_transferability`
-- Vet assessment: `vet_transferability_score` (0-3), `vet_obstacle_summary`
-- Mention type: `defines | uses | validates | critiques | adapts | citation_only`
+**Data ingestion:**
+- `export_citations.py` - Export citations from DB to JSON for download
+- `download_pmc.py` - Download PMC HTMLs (supports both ref_id formats)
+- `embed_chunks.py` - Generate OpenAI embeddings
+- `load_chunks.py` - Load review chunks (supports `--domain`)
+- `load_paper_chunks.py` - Load paper chunks (supports `--domain`)
+- `process_papers_pipeline.sh` - Automated chunk→embed→load workflow
 
-**Current extraction quality:**
-- ~2 out of 3 accurate (occasional RT-PCR misclassification as `targeted_NGS`)
-- Edge cases acceptable per user preference
+**Clustering & analysis:**
+- `cluster_topics.py` - HDBSCAN clustering + UMAP + gap scores
+- `analyze_cluster_topics.py` - TF-IDF + NGS keyword analysis per cluster
+- `filter_admin_sections.py` - Clean/analyze administrative content
 
-#### 5. Query System (`query_kb.py`)
-RAG pipeline with BM25 sentence re-ranking:
-- **Step 1:** Embed query with OpenAI
-- **Step 2:** pgvector cosine search across `review_chunks` + `paper_chunks`
-- **Step 3:** Build context with ref_id citations
-- **Step 4:** GPT-4o-mini generates cited answer
-- **Step 5 (optional --quote):** BM25 re-rank sentences within chunks, display verbatim quotes
+**Protocol extraction:**
+- `extract_protocols.py` - LLM extraction using OpenAI JSON schema mode
+  - Model: `gpt-4o-mini`
+  - 18-field protocol schema
+  - NGS-only focus (excludes RT-PCR, serology, culture)
 
-**Features:**
-- `--quote` flag: Extract top-N BM25-ranked sentences per chunk (no extra API calls)
-- `--show-chunks`: Print retrieved chunks before answer
-- Inline citation cleaning (strips `1 , 17 – 21` artifacts)
-- Abbreviation-aware sentence splitting (`Fig.`, `et al.`, `e.g.` don't trigger splits)
+**Query system:**
+- `query_kb.py` - RAG with BM25 sentence re-ranking
+  - `--quote` flag for verbatim excerpts
+  - Citation-aware context building
+
+#### 5. Clustering Infrastructure
+
+**Scripts:**
+- `cluster_topics.py` - Full clustering pipeline
+  - HDBSCAN (min_cluster_size=20, min_samples=10)
+  - L2-normalized embeddings + euclidean metric (equivalent to cosine)
+  - UMAP 2D projection
+  - Gap score computation
+  - Visualization generation
+
+- `analyze_cluster_topics.py` - Topic identification
+  - TF-IDF term extraction per cluster
+  - NGS keyword counting (60+ keywords)
+  - Representative chunk selection
+  - NGS relevance scoring
+
+**Database schema:**
+- `cluster_schema.sql` - Clustering tables
+  - `chunk_clusters`: cluster assignments + UMAP coordinates
+  - `cluster_gap_scores`: medical/vet counts + gap scores
+  - `cluster_representatives`: top chunks per cluster
+
+**Gap score formula:**
+```
+gap_score = log2(medical_count / vet_count)
+
+Interpretation:
+  gap_score > 2   : Medical-dominated (4x+)
+  gap_score 1-2   : Medical-leaning (2-4x)
+  gap_score -1..1 : Balanced
+  gap_score < -1  : Vet-leaning/dominated
+```
+
+#### 6. Consolidated Data Ingestion (NEW)
+
+**Simplified workflow for adding papers to the knowledge base:**
+
+**Scripts:**
+- `add_pmc_article.py` - Single-command article ingestion
+  - Download from PMCID or use existing HTML
+  - Extract chunks with admin filtering
+  - Generate embeddings (text-embedding-3-small)
+  - Load into papers/paper_chunks tables
+  - Duplicate checking by PMC ID
+  - Usage: `python add_pmc_article.py --pmcid PMC2581791 --domain medical`
+
+- `add_pmc_review_article.py` - Review article processing
+  - Process as review article (review_sources/review_chunks tables)
+  - Extract citations from References section
+  - Export citation list to JSON for bulk download
+  - Duplicate checking by doc_key
+  - Usage: `python add_pmc_review_article.py --pmcid PMC11171117 --domain veterinary --export-refs vet_refs.json`
+
+- `download_pmc_from_file.py` - Bulk download from citation lists
+  - Reads reference_index.json format
+  - Maintains download log for safe re-runs
+  - Rate limiting (default 1.5s between requests)
+  - B-number sorting for ordered downloads
+  - Usage: `python download_pmc_from_file.py --refs vet_refs.json --outdir html/vet --log vet_log.json`
+
+- `bulk_add_papers.sh` - Batch processing helper
+  - Loops through HTML directory
+  - Calls add_pmc_article.py for each file
+  - Reports success/skip/failure counts
+  - Usage: `./bulk_add_papers.sh html/vet veterinary`
+
+**Documentation:**
+- `USAGE_GUIDE.md` - Comprehensive guide for data ingestion workflows
+
+**Key features:**
+- All scripts support `--force` to override duplicate checking
+- Safe re-run capability (duplicate detection)
+- Transactional database updates with rollback on errors
+- Admin content filtering enabled by default
+- OpenAI embedding generation integrated
+
+#### 7. PDF Processing (NEW)
+
+**Tools for parsing PDF articles when PMC HTML format unavailable:**
+
+**General PDF parser:**
+- `parse_pdf_article.py` - Font-based section detection for structured scientific articles
+  - Analyzes font sizes and styles to identify headings
+  - Hierarchical section structure (levels 1-3)
+  - Blacklist filtering for headers/footers
+  - Article boundary detection (title to references)
+  - Supports multiple output formats (JSON, sections, tree, full text)
+  - Usage: `python parse_pdf_article.py PDFs/nature_methods.pdf --output-format json`
+
+**Specialized Science journal parser:**
+- `parse_science_pdf.py` - Handles Science journal PDFs with unique characteristics
+  - DOI extraction from filename, metadata, or PDF text
+  - Multi-article PDF handling with previous article skip
+  - Paragraph-based section splitting (default)
+  - Smart heading generation from first sentence
+  - Header/footer cleaning
+  - Supports --no-paragraphs flag for single section mode
+  - Usage: `python parse_science_pdf.py PDFs/science.1181498.pdf --output-format json`
+
+**Key features:**
+- PyMuPDF (fitz) for PDF text extraction with font metadata
+- Paragraph splitting at sentence boundaries (max 3,000 chars per section)
+- DOI-based article boundary detection for multi-article files
+- Preserves paragraph structure for downstream chunking
+- Multiple output formats: json, sections, tree, full
+
+**Limitations:**
+- Font-based detection may miss sections with inconsistent formatting
+- Science parser specialized for Science journal format only
+- Title extraction relies on PDF metadata or filename patterns
+- Multi-article PDFs require DOI markers for proper separation
 
 ---
 
@@ -107,32 +259,75 @@ RAG pipeline with BM25 sentence re-ranking:
 | File | Purpose | Status |
 |------|---------|--------|
 | `setup_db.py` | Create PostgreSQL database + schema | Working |
-| `create_schema.sql` | Full v2 schema (fresh install) | ✅ v2 |
-| `migrate_v2.sql` | v1→v2 migration (live DB) | ✅ Applied |
-| `chunk_article.py` | Original PMC chunker (now superseded by extractors) | Legacy |
-| `download_pmc.py` | Download PMC HTMLs from reference list | Working |
-| `embed_chunks.py` | Generate OpenAI embeddings for chunks | Working |
-| `load_chunks.py` | Load review article chunks → DB | Working |
-| `load_paper_chunks.py` | Load cited paper chunks → DB | Working |
-| `extract_protocols.py` | LLM extraction of protocols from chunks | ✅ Phase 1 |
-| `query_kb.py` | RAG query with BM25 quote extraction | ✅ Phase 1 |
+| `create_schema.sql` | Full v3 schema (fresh install) | ✅ v3 with clustering |
+| `cluster_schema.sql` | Clustering tables (add-on) | ✅ Applied |
+| `migrate_v2.sql` | v1→v2 migration | ✅ Applied (legacy) |
+| `download_pmc.py` | Download PMC HTMLs (legacy - use download_pmc_from_file.py) | ✅ Supports both ref_id formats |
+| `export_citations.py` | Export citations from DB to JSON | ✅ Working |
+| `embed_chunks.py` | Generate OpenAI embeddings (legacy - use add_pmc_*.py) | Working |
+| `load_chunks.py` | Load review chunks → DB (legacy - use add_pmc_review_article.py) | ✅ Supports `--domain` |
+| `load_paper_chunks.py` | Load paper chunks → DB (legacy - use add_pmc_article.py) | ✅ Supports `--domain` |
+| `process_papers_pipeline.sh` | Automated chunk→embed→load (legacy - use bulk_add_papers.sh) | ✅ Working |
+| `extract_protocols.py` | LLM extraction of protocols | ✅ Supports `--cluster-id` |
+| `query_kb.py` | RAG query with domain separation + author citations | ✅ Enhanced Phase 2 |
+| `cluster_topics.py` | HDBSCAN clustering + UMAP | ✅ Working |
+| `analyze_cluster_topics.py` | NGS topic analysis | ✅ Working |
+| `filter_admin_sections.py` | Clean administrative content | ✅ Working |
+| `search_references.py` | Search papers by title/author/PMC/ref-id | ✅ Working |
+| `search_protocols.py` | Search protocols by modality/pathogen/specimen | ✅ Working |
+| `subcluster_cluster0.py` | Pathogen-centric sub-clustering | ✅ Working |
+| `plot_cluster0_umap.py` | Flexible UMAP visualization (domain/pathogen/NGS) | ✅ Working |
+
+### Consolidated Data Ingestion Scripts (PREFERRED)
+| File | Purpose | Status |
+|------|---------|--------|
+| `add_pmc_article.py` | Single-command article ingestion (download/chunk/embed/load) | ✅ NEW - Use this instead of manual workflow |
+| `add_pmc_review_article.py` | Review article processing + citation extraction | ✅ NEW - Use this for review articles |
+| `download_pmc_from_file.py` | Bulk download from citation JSON with resume capability | ✅ NEW - Use this instead of download_pmc.py |
+| `bulk_add_papers.sh` | Batch processing helper for downloaded HTMLs | ✅ NEW |
+| `USAGE_GUIDE.md` | Comprehensive documentation for data ingestion | ✅ NEW |
+
+### PDF Processing Scripts
+| File | Purpose | Status |
+|------|---------|--------|
+| `parse_pdf_article.py` | General PDF parser with font-based section detection | ✅ NEW - For Nature, Cell, etc. |
+| `parse_science_pdf.py` | Specialized Science journal PDF parser (paragraph sections) | ✅ NEW - For Science journal only |
 
 ### Extractors Package
 | File | Purpose |
 |------|---------|
 | `extractors/__init__.py` | Package exports |
 | `extractors/base.py` | Abstract base class |
-| `extractors/pmc.py` | PMC HTML extractor |
+| `extractors/pmc.py` | PMC HTML extractor (with admin filtering) |
+| `admin_blacklist.py` | Administrative section patterns (20+ regexes) |
+
+### Analysis Reports
+| File | Content |
+|------|---------|
+| `gap_analysis_final.md` | Complete clustering analysis & findings |
+| `gap_analysis_report.md` | Initial analysis (before cleanup) |
+| `cluster_ngs_summary.md` | Quick reference - NGS topics per cluster |
+| `gap_scores.tsv` | Cluster gap scores (TSV export) |
+| `CLUSTERING_STRATEGY.md` | Design doc (not created, see gap_analysis_final.md) |
 
 ### Data Files
 | Path | Content |
 |------|---------|
-| `html/` | 116 PMC HTMLs (B1-B168 with gaps, downloaded) |
-| `pmc_chunks/` | 115 JSON files (chunked papers without embeddings) |
-| `chunks.json` | Review article chunks |
-| `embeddings.json` | Review article embeddings |
-| `reference_index.json` | Review article reference metadata |
-| `download_log.json` | PMC download tracking |
+| `html/` | 116 PMC HTMLs (medical papers, B1-B168 with gaps) |
+| `html/vet/` | 71 PMC HTMLs (veterinary papers) |
+| `pmc_chunks/` | 115 JSON files (medical paper chunks) |
+| `pmc_chunks_vet/` | 71 JSON files (veterinary paper chunks) |
+| `pmc_chunks_vet_test/` | 3 JSON files (test chunks) |
+| `chunks.json` | Medical review chunks |
+| `embeddings.json` | Medical review embeddings |
+| `vet_chunks.json` | Veterinary review chunks |
+| `vet_embeddings.json` | Veterinary review embeddings |
+| `vet_pmc_refs.json` | Veterinary citations (71 PMC IDs) |
+| `reference_index.json` | Medical review references |
+| `vet_references.json` | Veterinary review references |
+| `download_log.json` | Medical PMC download log |
+| `vet_download_log.json` | Veterinary PMC download log |
+| `cluster_plots/` | UMAP visualizations (3 PNG files) |
 
 ---
 
@@ -163,6 +358,7 @@ conda activate openai
 
 # Key packages
 openai, psycopg2, beautifulsoup4, rank_bm25
+scikit-learn, hdbscan, umap-learn, matplotlib, numpy  # NEW: clustering
 ```
 
 ### OpenAI API
@@ -175,22 +371,102 @@ echo $OPENAI_API_KEY
 
 ## Common Tasks
 
-### Run Protocol Extraction
-```bash
-cd /Users/david/work/informatics_ai_workflow
-conda activate openai
+### Clustering & Gap Analysis
 
-# Dry-run (test extraction without DB writes)
-python extract_protocols.py --dry-run --limit 5
+```bash
+# Run full clustering pipeline (HDBSCAN + UMAP + gap scores)
+python cluster_topics.py --plot
+
+# Analyze NGS topics in clusters
+python analyze_cluster_topics.py --summary-only
+
+# Detailed analysis of specific cluster
+python analyze_cluster_topics.py --cluster 0
+
+# Clean administrative sections from database
+python filter_admin_sections.py --clean
+```
+
+### Data Ingestion - SIMPLIFIED WORKFLOW (PREFERRED)
+
+**Add a single article:**
+```bash
+# From PMCID (auto-downloads)
+python add_pmc_article.py --pmcid PMC2581791 --domain medical
+
+# From existing HTML file
+python add_pmc_article.py --html html/PMC2581791.html --domain medical
+
+# Force re-add (override duplicate check)
+python add_pmc_article.py --pmcid PMC2581791 --domain medical --force
+```
+
+**Add a review article with citation extraction:**
+```bash
+# Process review and export citations
+python add_pmc_review_article.py \
+  --pmcid PMC11171117 \
+  --domain veterinary \
+  --export-refs vet_citations.json
+
+# Download all cited papers
+python download_pmc_from_file.py \
+  --refs vet_citations.json \
+  --outdir html/vet \
+  --log vet_download_log.json
+
+# Bulk add all downloaded papers
+./bulk_add_papers.sh html/vet veterinary
+```
+
+**Skip embedding generation (for testing):**
+```bash
+python add_pmc_article.py --pmcid PMC2581791 --domain medical --no-embed
+```
+
+### Data Ingestion - LEGACY WORKFLOW (Still works)
+
+```bash
+# Export citations from review
+python export_citations.py --source-id 3 --pmc-only --output vet_refs.json
+
+# Download PMC papers
+python download_pmc.py --refs vet_refs.json --outdir html/vet --log vet_log.json
+
+# Process papers through full pipeline (chunk→embed→load with filtering)
+bash process_papers_pipeline.sh html/vet pmc_chunks_vet veterinary PMC11171117
+```
+
+### PDF Processing
+
+```bash
+# Parse general PDF article (Nature, Cell, etc.)
+python parse_pdf_article.py PDFs/nature_methods.pdf --output-format json > output.json
+python parse_pdf_article.py PDFs/nature_methods.pdf --show-tree  # Preview structure
+
+# Parse Science journal PDF
+python parse_science_pdf.py PDFs/science.1181498.pdf --output-format json > output.json
+python parse_science_pdf.py PDFs/science.1181498.pdf --show-tree  # Preview structure
+python parse_science_pdf.py PDFs/science.1181498.pdf --no-paragraphs  # Single section mode
+
+# Output formats: json, sections, tree, full
+```
+
+### Protocol Extraction
+
+```bash
+# Extract from specific cluster
+python extract_protocols.py --source papers --cluster-id 0
 
 # Extract from specific paper
 python extract_protocols.py --source papers --paper-id 104
 
-# Full extraction (all chunks)
-python extract_protocols.py
+# Dry-run (test without DB writes)
+python extract_protocols.py --dry-run --limit 5
 ```
 
 ### Query the Knowledge Base
+
 ```bash
 # Basic query
 python query_kb.py -q "what NGS methods detect arboviruses in CSF"
@@ -203,104 +479,467 @@ python query_kb.py -q "..." --show-chunks
 ```
 
 ### Check DB State
+
 ```bash
-psql mngs_kb -c "SELECT COUNT(*) FROM papers;"
-psql mngs_kb -c "SELECT COUNT(*) FROM paper_chunks WHERE embedding IS NOT NULL;"
-psql mngs_kb -c "SELECT COUNT(*) FROM protocols;"
+# Overall counts
+psql mngs_kb -c "
+SELECT
+  'review' as source, rs.domain, COUNT(rc.id) as chunks
+FROM review_sources rs
+LEFT JOIN review_chunks rc ON rs.id = rc.source_id
+GROUP BY rs.domain
+UNION ALL
+SELECT
+  'paper', p.domain, COUNT(pc.id)
+FROM papers p
+LEFT JOIN paper_chunks pc ON p.id = pc.paper_id
+GROUP BY p.domain;
+"
+
+# Cluster summary
+psql mngs_kb -c "SELECT * FROM cluster_gap_scores ORDER BY gap_score DESC;"
+
+# Protocol counts
 psql mngs_kb -c "SELECT ngs_modality, COUNT(*) FROM protocols GROUP BY ngs_modality;"
 ```
 
-### View Extracted Protocols
-```sql
--- List all protocols
-SELECT id, ngs_modality, pathogen_class, specimen_type,
-       vet_transferability_score,
-       LEFT(excerpt_method, 100)
-FROM protocols;
+---
 
--- Protocol with sources
-SELECT p.id, p.ngs_modality, pc.heading, pap.pmc_id
-FROM protocols p
-JOIN protocol_sources ps ON ps.protocol_id = p.id
-JOIN paper_chunks pc ON pc.id = ps.paper_chunk_id
-JOIN papers pap ON pap.id = ps.paper_id;
-```
+## Key Findings (Phase 1)
+
+### Initial Hypothesis (REVISED)
+~~Medical NGS protocols need to be transferred to veterinary practice~~
+
+### Actual Finding
+**Medical and veterinary NGS communities show balanced knowledge convergence**
+
+### Evidence
+- **1.2:1 medical:vet ratio** (55% med, 45% vet) after filtering admin content
+- **2 balanced clusters** (gap scores 0.23-0.31) vs initial 8 medical-dominated clusters
+- **Same technologies:** mNGS, Illumina, MinION, PacBio, metagenomic sequencing
+- **Same applications:** CSF diagnostics, blood pathogen detection, coverage analysis
+- **99.9% NGS content in Cluster 0** (2,019 chunks) with 1.24:1 med:vet ratio
+
+### Lessons Learned
+
+1. **Administrative content skews analysis** - 23% of initial dataset was non-technical boilerplate
+   - Medical journals have more standardized admin sections → artificial gaps
+   - **Solution:** Filter at ingestion using `PMCExtractor(path, filter_admin=True)`
+
+2. **Dataset balance matters** - Initial 4.6:1 ratio created false gaps
+   - Balanced 1.2:1 ratio revealed true topic overlap
+   - **Recommendation:** Maintain ~1:1 domain ratio for comparative analysis
+
+3. **Veterinary NGS more advanced than expected** - Parallel development, not lagging
+   - Same platforms, same applications, similar validation approaches
+   - **Implication:** Bidirectional knowledge sharing, not one-way transfer
+
+4. **Noise is valuable** - 36.8% unclustered chunks may contain novel/specialized protocols
+   - Domain-specific applications, emerging methods, micro-topics
+   - **Action:** Mine noise for high-value outliers
 
 ---
 
-## Next Steps (Planned)
+## Next Steps (Phase 2)
 
-### Immediate (Phase 1 completion)
-1. **Run full extraction** on all 2,309 paper chunks (~$5-10 in API costs, ~2-3 hours)
-2. **Validate extraction quality** — review sample of 20-30 protocols for accuracy
-3. **Extract from review article** chunks (22 chunks, should yield high-quality NGS protocols)
+### Immediate
+1. **Extract protocols from Cluster 0** (2,019 NGS-rich chunks)
+   ```bash
+   python extract_protocols.py --cluster-id 0 --source papers
+   ```
 
-### Phase 2: Veterinary Corpus & Gap Analysis
-1. **Identify veterinary NGS literature** (PubMed search or in-house sources)
-2. **Ingest veterinary papers** (same pipeline: download → chunk → embed → load, tag `domain='veterinary'`)
-3. **Cluster all chunks** (HDBSCAN on embeddings) to find topic groups
-4. **Compute gap scores** per cluster (medical:veterinary ratio)
-5. **Update `query_kb.py`** to report gap context in answers
+2. **Sub-cluster Cluster 0** for application-specific groups
+   - CSF/CNS infections vs blood diagnostics vs respiratory vs parasitology
+   - Use tighter parameters or K-means with K=10-20
 
-### Phase 3: Protocol Resolution (Optional)
-1. **Implement `resolve_protocols.py`** (follow citation chains to external protocol sources)
-2. **Add downloaders:** `protocols_io.py`, `cdc.py`, `woah.py`, `github.py`
-3. **Populate `protocol_citations` table** (tracking when papers cite external SOPs)
+3. **Query system enhancement** - Add cluster context to RAG answers
+   ```python
+   # "This protocol appears in a balanced medical-vet cluster (gap=0.31),
+   #  indicating widespread adoption across domains."
+   ```
+
+### Short-term
+1. **Comparative protocol analysis** - How do medical and vet validate the *same* methods?
+   - Sensitivity/specificity comparisons
+   - Specimen type differences
+   - Cost/infrastructure requirements
+
+2. **Citation network analysis** - Which medical papers are cited in vet literature?
+   - Identify influential cross-domain studies
+   - Map knowledge flow patterns
+
+3. **Topic modeling** - Apply LDA or BERTopic to Cluster 0 for finer granularity
+
+### Long-term (Phase 3)
+1. **Protocol resolution** - Follow citation chains to external SOPs
+   - Implement `resolve_protocols.py`
+   - Add downloaders: `protocols_io.py`, `cdc.py`, `woah.py`
+
+2. **Comparative dashboard** - Visualize medical-vet protocol equivalencies
+
+3. **Expand corpus** - Add wildlife, aquatic, or livestock NGS literature
 
 ---
 
-## Known Issues & Edge Cases
+## Known Issues & Considerations
+
+### Clustering
+- **High noise (36.8%)** - Expected for heterogeneous scientific literature, contains valuable outliers
+- **Silhouette score (0.114)** - Low but appropriate for broad topic clusters
+- **Two-cluster result** - May need sub-clustering for application-specific analysis
+- **Parameter sensitivity** - min_cluster_size=20 works well after admin filtering
 
 ### Protocol Extraction
-- **RT-PCR misclassification:** Occasional false positives (e.g. protocol #6 in test run)
-  - Severity: Low (user accepts ~33% edge case rate)
-  - Mitigation: Manual review, or strengthen prompt with explicit examples
-- **String "null" vs JSON null:** LLM sometimes returns `"null"` string instead of `null`
-  - Status: Addressed in system prompt ("Use JSON null, not string 'null'")
+- **RT-PCR misclassification** - Occasional false positives (e.g., amplicon NGS vs PCR)
+- **String "null" vs JSON null** - LLM sometimes returns string instead of null
+- **Edge cases** - ~33% accuracy acceptable per user preference
+- **Extraction incomplete** - Only 3 protocols extracted so far (test run)
 
-### Query System
-- **Citation number artifacts:** Inline citations like `1 , 17 – 21` appear in chunks
-  - Status: Partially cleaned by `_clean_sentence()` in `query_kb.py`
-  - Could be cleaned upstream in extractors if needed
-
-### Schema
-- **protocol_sources constraint:** Exactly one of `review_chunk_id` / `paper_chunk_id` must be set
-  - Status: Working correctly (separate INSERT branches in `link_protocol_to_chunk`)
+### Data Quality
+- **Administrative sections removed** - 966 chunks filtered (ethics, funding, etc.)
+- **Citation extraction** - Review chunks show 0 inline citations (potential extractor bug)
+- **Domain tagging** - Manual for reviews, automatic for papers (based on source)
 
 ---
 
 ## Important Context for New Sessions
 
-### Design Decisions Made
+### Design Decisions
 
-1. **Protocols are canonical, sources accumulate**
-   - Same protocol (mNGS + virus + CSF) gets one `protocols` row
-   - Multiple papers describing it create multiple `protocol_sources` rows
-   - Deduplication by identity match, not text similarity
+1. **Protocols are canonical, sources accumulate** - Same protocol gets one `protocols` row, multiple `protocol_sources` rows
 
-2. **Typed excerpts, not free text**
-   - Each excerpt type (`method`, `performance`, `limitations`, etc.) has its own field
-   - Enables structured queries like "show all limitations for mNGS protocols"
+2. **Typed excerpts** - Each excerpt type has its own field (enables structured queries)
 
-3. **Veterinary transferability is LLM-assessed, not rule-based**
-   - Score 0-3 based on specimen feasibility, cost, infrastructure
-   - May need recalibration after veterinary corpus ingestion
+3. **Veterinary transferability is LLM-assessed** - May need recalibration based on balanced clustering results
 
-4. **NGS-only scope (as of latest refinement)**
-   - Excludes conventional PCR, serology, culture
-   - Edge cases like amplicon-NGS are included
-   - Non-NGS methods mentioned for context are NOT extracted
+4. **NGS-only scope** - Excludes conventional PCR, serology, culture (amplicon-NGS included)
 
-5. **Phase 2 (vet corpus) is future work**
-   - User may have in-house veterinary protocol sources
-   - Clustering and gap analysis planned but not yet implemented
+5. **Administrative filtering at ingestion** - Prevents clustering on non-technical content
 
-### Questions to Ask User in New Session
+6. **Balanced dataset required** - ~1:1 medical:vet ratio for accurate gap analysis
 
-- How many protocols should be extracted before moving to Phase 2?
-- Is the current ~67% accuracy (2/3 NGS-only) acceptable or should prompt be strengthened?
-- Ready to ingest veterinary corpus, or finish medical extraction first?
-- Should we implement a web frontend now, or wait until gap analysis is done?
+---
+
+## Session 2026-02-20: Phase 2 Progress
+
+### Accomplishments
+
+#### 1. **Consolidated Data Ingestion Tools** ⭐ NEW
+- **Created `add_pmc_article.py`**: Single-command article ingestion
+  - Replaces 5+ step manual workflow (download→chunk→embed→load)
+  - Duplicate checking by PMC ID (safe to re-run)
+  - Supports `--pmcid` or `--html` input
+  - Admin filtering enabled by default
+  - Usage: `python add_pmc_article.py --pmcid PMC2581791 --domain medical`
+
+- **Created `add_pmc_review_article.py`**: Review article processing
+  - Processes as review article (review_sources/review_chunks tables)
+  - Extracts citations from References section
+  - Exports citation list to JSON for bulk download
+  - Usage: `python add_pmc_review_article.py --pmcid PMC11171117 --domain veterinary --export-refs refs.json`
+
+- **Created `download_pmc_from_file.py`**: Bulk download with resume capability
+  - Reads citation JSON from add_pmc_review_article.py
+  - Maintains download log for safe re-runs
+  - Rate limiting (default 1.5s between requests)
+  - B-number sorting for ordered downloads
+
+- **Created `bulk_add_papers.sh`**: Batch processing helper
+  - Loops through HTML directory calling add_pmc_article.py
+  - Reports success/skip/failure counts
+  - Usage: `./bulk_add_papers.sh html/vet veterinary`
+
+- **Created `USAGE_GUIDE.md`**: Comprehensive documentation
+  - Quick reference for all three scripts
+  - Common workflow examples
+  - Error recovery procedures
+  - Cost estimation for embeddings
+
+#### 2. **PDF Processing Tools** ⭐ NEW
+- **Created `parse_pdf_article.py`**: General PDF parser for structured scientific articles
+  - Font-based section detection (analyzes font size/style)
+  - Hierarchical section structure (levels 1-3)
+  - Blacklist filtering for headers/footers
+  - Article boundary detection (title to references)
+  - Multiple output formats: json, sections, tree, full
+  - Tested on Nature Methods article: 55 sections extracted
+  - Usage: `python parse_pdf_article.py PDFs/nature_methods.pdf --output-format json`
+
+- **Created `parse_science_pdf.py`**: Specialized Science journal PDF parser
+  - Handles Science journal's unique format (no section headings, multi-article PDFs)
+  - DOI extraction from filename, metadata, or PDF text
+  - Multi-article handling with previous article skip
+  - **Paragraph-based section splitting** (default behavior)
+    - Smart heading generation from first sentence
+    - Sentence boundary splitting for large paragraphs (max 3,000 chars)
+  - Header/footer cleaning
+  - Tested on science.1181498.pdf: 9 paragraph sections (576-2,991 chars each)
+  - Usage: `python parse_science_pdf.py PDFs/science.1181498.pdf --output-format json`
+
+#### 3. **RAG System Enhancements**
+- **Domain-separated answers**: Medical and Veterinary sections + Cross-Domain Synthesis
+- **Author-list citations**: Converted ref_ids (B83) to author-year format (Momoi & Matsuu 2020)
+- **Improved prompt**: Clearer excerpt type definitions to prevent misclassification
+- **Fixed protocol 5**: Corrected method vs limitation field confusion
+
+#### 4. **New Search Tools**
+- **`search_references.py`**: Find papers by title, author, PMC ID, ref-id (partial matching)
+- **`search_protocols.py`**: Query protocols by modality, pathogen, specimen, vet score
+  - Displays identity, performance metrics, excerpts (first 200 chars)
+  - Shows source details with `--show-sources` flag
+
+#### 5. **Protocol Extraction Progress**
+- **Schema finalized**: 18-field structured extraction with vet transferability
+- **Test extraction**: 3 protocols from paper_id=104 (mNGS for viral CSF diagnostics)
+- **Cluster support**: Added `--cluster-id` parameter to `extract_protocols.py`
+- **Running**: 100 chunks from Cluster 0 (in separate window)
+- **Estimated output**: 500-1,000 protocols from full Cluster 0 extraction
+
+#### 6. **Cluster 0 Sub-Clustering (Pathogen-Centric)**
+- **Created `subcluster_cluster0.py`**: Pathogen classification + HDBSCAN sub-clustering
+- **Pathogen distribution**: Unknown (57%), Bacteria (14%), Mixed (14%), Virus (11%), Parasite (3%), Fungus (1%)
+- **Sub-clustering results** (min_cluster_size=20):
+  - **Sub-cluster 0**: 607 chunks (mixed pathogens, 84% medical for mixed, 66% vet for unknown)
+  - **Sub-cluster 1**: 22 chunks (100% medical, bacteria/mixed focus)
+  - **Noise**: 1,390 chunks (68.8%) - high heterogeneity in Cluster 0
+- **New table**: `cluster0_subclusters` with pathogen_type metadata
+
+#### 7. **Flexible UMAP Visualization (`plot_cluster0_umap.py`)**
+- **Multiple color schemes**:
+  - `--color-by domain`: Medical (blue) vs Veterinary (red)
+  - `--color-by subcluster`: Each sub-cluster unique color
+  - `--color-by pathogen`: Bacteria, virus, fungus, parasite color-coded
+- **Label options**:
+  - `--add-labels ngs`: Top NGS keywords at cluster centroids
+  - `--add-labels pathogen`: Dominant pathogen type labels
+- **Generated 6 plots**: domain, pathogen, domain+NGS, subclusters, subclusters+pathogen, subclusters+NGS
+
+#### 8. **Data Additions**
+- **Added B83** (Momoi & Matsuu 2020): SFTSV detection in cats via mNGS
+  - Initially uploaded as "B100" but already in DB as B83
+  - 4 chunks, veterinary domain, PMC7953082
+
+### Critical Finding: Domain Separation in Embedding Space
+
+**Observation:** UMAP visualizations show medical and veterinary literature do NOT cluster together spatially, despite shared NGS methodologies and pathogen targets.
+
+**Implication:** The OpenAI embeddings capture overall semantic content (writing style, journal conventions, domain-specific terminology, clinical context) which dominates over NGS methodological commonalities.
+
+**Why this matters:**
+- Embeddings reflect "paper similarity" not "protocol similarity"
+- Medical and vet papers discussing the *same* NGS method (e.g., mNGS for CSF diagnostics) appear distant in embedding space
+- Current clustering finds domain-segregated topic groups, not cross-domain methodological connections
+
+**What we need:** A projection or metric that emphasizes NGS commonalities while being invariant to domain-specific language.
+
+---
+
+## Next Steps: Cross-Domain Connection Discovery
+
+### The Challenge
+How to identify medical-veterinary protocol equivalencies when:
+1. Full embeddings emphasize domain differences over methodological similarities
+2. Papers using identical NGS workflows may cluster separately by domain
+3. Cross-domain knowledge transfer requires finding commonalities despite overall dissimilarity
+
+### Proposed Approaches (Priority Order)
+
+#### **Approach 1: Protocol-Based Alignment** ⭐ (RECOMMENDED - Start Here)
+**Concept:** Use extracted protocols as structured anchors to link medical/vet literature
+
+**Implementation:**
+1. **Extract all protocols from Cluster 0** (currently running 100 chunks)
+2. **Define protocol equivalence criteria**:
+   ```python
+   same_protocol = (
+       modality == modality AND
+       pathogen_class == pathogen_class AND
+       specimen_type == specimen_type AND
+       platform == platform
+   )
+   ```
+3. **Build protocol-paper graph**:
+   - Nodes: protocols (deduplicated by identity fields)
+   - Edges: protocol_sources linking to papers
+   - Colors: medical (blue) vs veterinary (red) papers
+4. **Query for cross-domain protocols**:
+   ```sql
+   SELECT protocol_id, ngs_modality, pathogen_class, specimen_type,
+          COUNT(DISTINCT CASE WHEN domain='medical' THEN paper_id END) as med_papers,
+          COUNT(DISTINCT CASE WHEN domain='veterinary' THEN paper_id END) as vet_papers
+   FROM protocol_sources ps
+   JOIN papers p ON ps.paper_id = p.id
+   GROUP BY protocol_id, ngs_modality, pathogen_class, specimen_type
+   HAVING COUNT(DISTINCT domain) = 2;  -- Both domains
+   ```
+5. **Output**: List of shared protocols with medical + vet evidence
+
+**Advantages:**
+- Uses structured data already being extracted
+- Natural for practitioners (think in terms of protocols, not embeddings)
+- Can compare performance metrics, limitations across domains
+- Immediate actionability
+
+**Next script to write:** `analyze_shared_protocols.py`
+
+---
+
+#### **Approach 2: NGS Feature Space (Lighter-weight Alternative)**
+**Concept:** Project onto NGS-specific features instead of full embeddings
+
+**Implementation:**
+1. **Define NGS vocabulary** (60-100 keywords):
+   ```python
+   ngs_keywords = ['mngs', 'metagenomic', 'illumina', 'nanopore',
+                   'csf', 'bacteria', 'viral', 'sensitivity', ...]
+   ```
+2. **Create NGS-specific TF-IDF vectors** from chunk text
+3. **Cluster on NGS features only** (ignoring other semantic content)
+4. **Expect**: Medical and vet papers discussing "mNGS for bacterial sepsis" cluster together
+
+**Advantages:**
+- Simple to implement (scikit-learn TfidfVectorizer)
+- Interpretable (can see which keywords drive clustering)
+- Fast re-clustering without LLM calls
+
+**Disadvantages:**
+- Keyword-based (may miss paraphrases, synonyms)
+- Loses semantic depth of embeddings
+
+**Implementation difficulty:** LOW (2-3 hours)
+
+---
+
+#### **Approach 3: Canonical Correlation Analysis (CCA)**
+**Concept:** Find linear projections of medical and vet embeddings that maximize correlation
+
+**Implementation:**
+1. **Separate embeddings** into medical and veterinary subsets
+2. **Run CCA** to find directions of maximum correlation:
+   ```python
+   from sklearn.cross_decomposition import CCA
+   cca = CCA(n_components=10)
+   X_medical_cca, X_vet_cca = cca.fit_transform(X_medical, X_vet)
+   ```
+3. **Cluster in CCA space** (where domains are aligned)
+4. **Visualize** with UMAP on CCA-transformed embeddings
+
+**Advantages:**
+- Statistically principled
+- Maximizes cross-domain correlation
+- Preserves some semantic structure
+
+**Disadvantages:**
+- Requires equal sample sizes (may need downsampling)
+- Linear method (may miss nonlinear relationships)
+- Harder to interpret what CCA directions represent
+
+**Implementation difficulty:** MEDIUM (1 day)
+
+---
+
+#### **Approach 4: Contrastive Learning / Domain Adaptation**
+**Concept:** Train a model to create domain-invariant embeddings
+
+**Implementation:**
+1. **Collect triplets**: (anchor_med, positive_vet, negative_vet)
+   - Anchor: Medical chunk mentioning "mNGS for CSF"
+   - Positive: Veterinary chunk with same protocol (from protocol_sources)
+   - Negative: Veterinary chunk with different protocol
+2. **Fine-tune embedding model** (e.g., sentence-transformers) with triplet loss
+3. **Re-embed all chunks** with fine-tuned model
+4. **Cluster** in new embedding space
+
+**Advantages:**
+- Learned representation optimized for cross-domain similarity
+- Can handle complex, nonlinear relationships
+- State-of-the-art approach
+
+**Disadvantages:**
+- Requires training data (protocol_sources provides positive pairs)
+- Computationally expensive
+- Need enough protocol diversity for training
+
+**Implementation difficulty:** HIGH (3-5 days)
+
+---
+
+#### **Approach 5: Multi-View Clustering**
+**Concept:** Cluster using both semantic embeddings AND protocol features simultaneously
+
+**Implementation:**
+1. **Create two feature matrices**:
+   - View 1: OpenAI embeddings (1536-d)
+   - View 2: Protocol features (one-hot encoded modality, pathogen, specimen)
+2. **Use multi-view clustering algorithm** (e.g., Multi-View K-Means or Co-Training)
+3. **Weight views**: Emphasize protocol features for cross-domain similarity
+
+**Advantages:**
+- Leverages both semantic and structured information
+- Can control emphasis on protocol vs domain similarity
+
+**Disadvantages:**
+- Requires protocol extraction to be complete
+- More complex implementation
+
+**Implementation difficulty:** MEDIUM-HIGH (2-3 days)
+
+---
+
+#### **Approach 6: Graph-Based Linking**
+**Concept:** Build a knowledge graph and query for paths between medical and vet nodes
+
+**Implementation:**
+1. **Create graph**:
+   - Nodes: chunks, protocols, pathogens, specimens, platforms
+   - Edges: chunk→protocol (uses/defines), protocol→pathogen, protocol→specimen
+2. **Query for bridges**:
+   ```cypher
+   MATCH (med_chunk:Chunk {domain:'medical'})-[:USES]->(p:Protocol),
+         (vet_chunk:Chunk {domain:'veterinary'})-[:USES]->(p)
+   RETURN p, med_chunk, vet_chunk
+   ```
+3. **Visualize** bipartite network (medical papers | protocols | vet papers)
+
+**Advantages:**
+- Explicit relationship modeling
+- Can traverse multiple hops (chunk→protocol→pathogen→specimen)
+- Natural for knowledge graphs
+
+**Disadvantages:**
+- Requires graph database (Neo4j) or NetworkX
+- Complex setup
+
+**Implementation difficulty:** MEDIUM-HIGH (2-4 days)
+
+---
+
+### Recommended Path Forward
+
+**Phase 2A: Protocol-Based Alignment (Immediate - This Week)**
+1. ✅ Complete Cluster 0 protocol extraction (100→2,019 chunks)
+2. Create `analyze_shared_protocols.py` to find cross-domain protocol matches
+3. Generate report: "Top 20 NGS Protocols Used in Both Medical and Veterinary Diagnostics"
+
+**Phase 2B: NGS Feature Space (Next Week)**
+1. Implement TF-IDF on NGS vocabulary
+2. Re-cluster Cluster 0 on NGS features only
+3. Compare results to full embedding clustering
+
+**Phase 2C: Advanced Methods (Optional - If Needed)**
+1. Try CCA if protocol-based approach shows promise
+2. Evaluate multi-view clustering if we need finer granularity
+
+---
+
+### Questions for Next Session
+
+- Complete Cluster 0 protocol extraction (2,019 chunks)?
+- Implement `analyze_shared_protocols.py` to find cross-domain equivalencies?
+- Try NGS-vocabulary TF-IDF clustering as lightweight alternative?
+- Visualize protocol-paper bipartite graph (medical papers | protocols | vet papers)?
+- Build citation network to map knowledge flow?
+- Expand to other veterinary domains (wildlife, aquatic, livestock)?
 
 ---
 
@@ -310,20 +949,31 @@ JOIN papers pap ON pap.id = ps.paper_id;
 # 1. Check environment
 cd /Users/david/work/informatics_ai_workflow
 conda activate openai
-psql mngs_kb -c "SELECT COUNT(*) FROM protocols;"
+psql mngs_kb -c "SELECT COUNT(*) FROM chunk_clusters;"
 
 # 2. Read this file
 cat SESSION_CONTEXT.md
 
-# 3. Check recent work
-git log --oneline -10  # (if using git)
+# 3. Check recent clustering results
+psql mngs_kb -c "SELECT * FROM cluster_gap_scores;"
+python analyze_cluster_topics.py --summary-only
 
-# 4. Ask user: "Where would you like to continue?"
+# 4. Review gap analysis
+cat gap_analysis_final.md
+
+# 5. Ask user: "Where would you like to continue?"
 ```
 
 ---
 
-**Last updated:** 2026-02-19
-**Session token usage:** ~130k / 200k
-**Database state:** 3 protocols extracted (test run, paper_id=104)
-**Ready for:** Full extraction run OR Phase 2 planning
+**Last updated:** 2026-02-20 (consolidated data ingestion + PDF processing tools added)
+**Phase:** Phase 1 complete, Phase 2 in progress
+**Database state:** 3,272 chunks, 2 balanced clusters, 186 papers
+**Key finding:** Medical-veterinary NGS knowledge convergence (1.2:1 ratio)
+**Next priority:** Protocol extraction from Cluster 0 OR sub-clustering by application
+
+**Recent additions (2026-02-20):**
+- Consolidated data ingestion scripts (add_pmc_article.py, add_pmc_review_article.py, download_pmc_from_file.py)
+- PDF processing tools (parse_pdf_article.py, parse_science_pdf.py)
+- USAGE_GUIDE.md comprehensive documentation
+- Simplified workflow: Single command to add articles instead of 5+ step manual process

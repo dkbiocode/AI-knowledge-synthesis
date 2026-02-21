@@ -25,10 +25,21 @@ from .base import BaseExtractor
 class PMCExtractor(BaseExtractor):
     """Extract chunks and references from PubMed Central HTML."""
 
-    def __init__(self, source_path):
+    def __init__(self, source_path, filter_admin=False):
         super().__init__(source_path)
         self._soup = None
         self._ref_lookup = None
+        self._filter_admin = filter_admin
+        self._admin_filter_fn = None
+
+        # Load admin filter if requested
+        if self._filter_admin:
+            try:
+                from admin_blacklist import is_admin_section
+                self._admin_filter_fn = is_admin_section
+            except ImportError:
+                print("Warning: admin_blacklist.py not found, admin filtering disabled")
+                self._filter_admin = False
 
     @property
     def soup(self) -> BeautifulSoup:
@@ -266,6 +277,13 @@ class PMCExtractor(BaseExtractor):
         def walk(section: Tag, parent_heading: str | None = None):
             heading, level = get_heading(section)
             if not heading:
+                for child in section.find_all("section", recursive=False):
+                    walk(child, parent_heading)
+                return
+
+            # Skip administrative sections if filtering is enabled
+            if self._filter_admin and self._admin_filter_fn and self._admin_filter_fn(heading):
+                # Still recurse into children in case they're not administrative
                 for child in section.find_all("section", recursive=False):
                     walk(child, parent_heading)
                 return

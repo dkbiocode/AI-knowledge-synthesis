@@ -98,7 +98,19 @@ def main():
         for ref_id, ref in reference_index.items()
         if ref.get("pmc_id")
     ]
-    to_download.sort(key=lambda x: int(x[0].lstrip("B")))  # sort by B-number
+
+    # Sort by B-number (handle both "B5" and "B10-animals-14-01578" formats)
+    def extract_b_number(ref_id: str) -> int:
+        # Strip 'B' prefix and extract first numeric part
+        try:
+            stripped = ref_id.lstrip("B")
+            # Handle formats like "10-animals-14-01578" by taking first number
+            num_str = stripped.split("-")[0] if "-" in stripped else stripped
+            return int(num_str)
+        except (ValueError, IndexError):
+            return 0
+
+    to_download.sort(key=lambda x: extract_b_number(x[0]))
 
     if args.limit:
         to_download = to_download[:args.limit]

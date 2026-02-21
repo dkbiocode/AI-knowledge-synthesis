@@ -1,1 +1,72 @@
-__pycache__
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Data files (large, generated, or sensitive)
+data/
+figures/*.png
+figures/*.pdf
+*.json
+*.tsv
+!requirements.json
+
+# HTML downloads
+*.html
+*_files/
+
+# PDFs
+*.pdf
+PDFs/
+
+# Embeddings and chunks (large files)
+embeddings.json
+*_embeddings.json
+chunks.json
+*_chunks.json
+pmc_chunks*/
+*.embedding
+
+# Logs
+*.log
+download_log.json
+*_log.json
+
+# Database dumps
+*.sql.gz
+*.dump
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+.DS_Store
+
+# Keep important files
+!sql/*.sql
+!docs/*.md
+!README.md
+!SESSION_CONTEXT.md
+!USAGE_GUIDE.md
+!requirements.txt
+
+# Keep example/template files
+!example-*.txt
+!*-template.*

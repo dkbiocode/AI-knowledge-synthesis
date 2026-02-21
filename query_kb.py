@@ -87,6 +87,7 @@ WITH review_hits AS (
         rc.parent_heading,
         rc.text,
         rs.title                    AS doc_title,
+        rs.domain                   AS domain,
         NULL::text                  AS paper_pmc_id,
         -- Collect all ref_ids cited in this review chunk
         COALESCE(
@@ -100,7 +101,7 @@ WITH review_hits AS (
     LEFT JOIN chunk_citations cc ON cc.chunk_id = rc.id
     LEFT JOIN citations c        ON c.id = cc.citation_id
     WHERE rc.embedding IS NOT NULL
-    GROUP BY rc.id, rc.heading, rc.parent_heading, rc.text, rs.title
+    GROUP BY rc.id, rc.heading, rc.parent_heading, rc.text, rs.title, rs.domain
     HAVING 1 - (rc.embedding <=> %(qvec)s::vector) >= %(min_score)s
 
 ),
@@ -112,6 +113,7 @@ paper_hits AS (
         pc.parent_heading,
         pc.text,
         p.title                     AS doc_title,
+        p.domain                    AS domain,
         p.pmc_id                    AS paper_pmc_id,
         -- ref_ids of citations that point to this paper
         COALESCE(
@@ -124,7 +126,7 @@ paper_hits AS (
     JOIN papers p    ON p.id = pc.paper_id
     LEFT JOIN citations c ON c.paper_id = p.id
     WHERE pc.embedding IS NOT NULL
-    GROUP BY pc.id, pc.heading, pc.parent_heading, pc.text, p.title, p.pmc_id
+    GROUP BY pc.id, pc.heading, pc.parent_heading, pc.text, p.title, p.domain, p.pmc_id
     HAVING 1 - (pc.embedding <=> %(qvec)s::vector) >= %(min_score)s
 )
 SELECT * FROM review_hits
@@ -149,10 +151,21 @@ def search(cur, query_vec: list[float], top_k: int, min_score: float) -> list[di
 def build_context(hits: list[dict]) -> str:
     """
     Format retrieved chunks into a numbered context block.
-    Each hit gets a label showing its source and ref_ids.
+    Each hit gets a label showing its domain, source, and ref_ids.
+    Chunks are grouped by domain (medical first, then veterinary).
     """
     lines = []
+    current_domain = None
+
     for i, h in enumerate(hits, 1):
+        # Add domain section header when domain changes
+        domain = h.get("domain", "unknown").upper()
+        if domain != current_domain:
+            if current_domain is not None:
+                lines.append("")  # Add spacing between domain sections
+            lines.append(f"=== {domain} LITERATURE ===")
+            current_domain = domain
+
         ref_ids = h["ref_ids"] or []
         if ref_ids:
             cite_label = ", ".join(sorted(set(ref_ids)))
@@ -164,7 +177,7 @@ def build_context(hits: list[dict]) -> str:
         section = f"{parent} > {heading}".strip(" >") if parent else heading
 
         lines.append(
-            f"[{i}] Source: {cite_label} | {h['doc_title'] or ''} | {section}\n"
+            f"[{i}] Domain: {h.get('domain', 'unknown')} | Source: {cite_label} | {h['doc_title'] or ''} | {section}\n"
             f"Score: {h['score']:.3f}\n"
             f"{h['text'].strip()}\n"
         )
@@ -176,12 +189,36 @@ def build_context(hits: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are a specialist in infectious disease diagnostics and metagenomics.
-Answer the user's question using ONLY the provided context passages.
-Cite sources using the reference IDs shown (e.g. B5, B12).
-If a passage comes from the review article itself, note that.
-If the context does not contain enough information to answer, say so.
-Be concise but complete. Use bullet points where appropriate.\
+You are a specialist in infectious disease diagnostics and metagenomics with expertise in both medical and veterinary applications.
+
+Answer the user's question using ONLY the provided context passages. Follow these strict rules:
+
+**CRITICAL RULES:**
+1. NEVER make generalizations when specific details are requested
+2. If the user asks for specific items (e.g., "what specific pathogens", "which methods", "list the protocols"), you MUST:
+   - Extract and list the EXACT names/details mentioned in the context
+   - If specific details are NOT in the context, explicitly state: "The retrieved sources do not provide specific [pathogen names/methods/details]"
+   - NEVER use vague terms like "various pathogens", "multiple methods", or "several approaches" when specific information was requested
+3. Always cite sources using reference IDs (e.g., B5, B12)
+4. Distinguish clearly between what IS stated in the sources vs. what is NOT
+
+**Answer Format:**
+
+1. **Medical Literature**: Present findings from medical (human) sources first.
+   - If specific details requested but not found: State "Specific [details] not provided in retrieved medical sources"
+   - If general information found: Summarize with citations
+
+2. **Veterinary Literature**: Present findings from veterinary sources second.
+   - Same rules as above
+
+3. **Cross-Domain Synthesis**: ONLY if relevant information was found in both domains:
+   - Highlight connections, overlaps, or knowledge-sharing opportunities
+   - If insufficient information: State "Insufficient specific information for cross-domain comparison"
+
+**Output Style:**
+- Use bullet points and tables for lists of specific items
+- Be concise but complete
+- Prefer "Not specified in sources" over vague generalizations\
 """
 
 
@@ -207,6 +244,74 @@ def generate_answer(question: str, context: str, model: str) -> str:
         temperature=0.2,
     )
     return response.choices[0].message.content
+
+
+# ---------------------------------------------------------------------------
+# Citation metadata helper
+# ---------------------------------------------------------------------------
+
+def fetch_citation_metadata(cur, ref_ids: list[str]) -> dict[str, dict]:
+    """
+    Fetch citation metadata (authors, year, title, journal) for a list of ref_ids.
+    Returns a dict mapping ref_id -> {authors, year, title, journal}.
+    """
+    if not ref_ids:
+        return {}
+
+    placeholders = ','.join(['%s'] * len(ref_ids))
+    query = f"""
+        SELECT ref_id, authors, year, title, journal
+        FROM citations
+        WHERE ref_id IN ({placeholders})
+    """
+    cur.execute(query, ref_ids)
+
+    result = {}
+    for row in cur.fetchall():
+        ref_id, authors, year, title, journal = row
+        result[ref_id] = {
+            'authors': authors,
+            'year': year,
+            'title': title,
+            'journal': journal
+        }
+    return result
+
+
+def format_citation(ref_id: str, metadata: dict) -> str:
+    """
+    Format a citation in author-list style.
+    Example: "Yi et al. 2024" or "Smith & Jones 2023"
+    """
+    if not metadata:
+        return ref_id  # Fallback to ref_id if no metadata
+
+    authors = metadata.get('authors', '')
+    year = metadata.get('year', '')
+
+    if not authors:
+        return f"{ref_id} ({year})" if year else ref_id
+
+    # Parse author list (format: "Last1; Last2; Last3" or "First Last; First Last")
+    author_parts = [a.strip() for a in authors.split(';')]
+
+    if len(author_parts) == 0:
+        first_author = ref_id
+    elif len(author_parts) == 1:
+        # Extract last name from "First Last" or just use "Last"
+        name_parts = author_parts[0].split()
+        first_author = name_parts[-1] if name_parts else author_parts[0]
+    elif len(author_parts) == 2:
+        # Two authors: "Smith & Jones"
+        first = author_parts[0].split()[-1] if author_parts[0].split() else author_parts[0]
+        second = author_parts[1].split()[-1] if author_parts[1].split() else author_parts[1]
+        first_author = f"{first} & {second}"
+    else:
+        # Three or more: "Smith et al."
+        first = author_parts[0].split()[-1] if author_parts[0].split() else author_parts[0]
+        first_author = f"{first} et al."
+
+    return f"{first_author} {year}" if year else first_author
 
 
 # ---------------------------------------------------------------------------
@@ -295,20 +400,38 @@ def top_sentences(question: str, chunk_text: str, n: int = 2) -> list[tuple[str,
     return [(sentences[i], float(scores[i])) for i in top_indices]
 
 
-def print_quotes(hits: list[dict], question: str, n: int):
+def print_quotes(hits: list[dict], question: str, n: int, cur):
     """
     For each retrieved chunk, print the top-n BM25-ranked sentences as
-    verbatim supporting evidence.
+    verbatim supporting evidence with author-list style citations.
     """
+    # Collect all ref_ids from hits to fetch metadata in one query
+    all_ref_ids = []
+    for h in hits:
+        ref_ids = h.get("ref_ids") or []
+        all_ref_ids.extend(ref_ids)
+    all_ref_ids = list(set(all_ref_ids))  # Remove duplicates
+
+    # Fetch citation metadata
+    citation_metadata = fetch_citation_metadata(cur, all_ref_ids)
+
     print(f"\n{'─' * 72}")
     print(f"  SUPPORTING QUOTES  (top {n} sentence(s) per chunk, ranked by BM25)")
     print(f"{'─' * 72}\n")
 
     for i, h in enumerate(hits, 1):
         ref_ids = h["ref_ids"] or []
-        cite_label = ", ".join(sorted(set(ref_ids))) if ref_ids else (
-            "review article" if h["source_type"] == "review" else "cited paper"
-        )
+
+        # Format citations in author-list style
+        if ref_ids:
+            formatted_cites = []
+            for ref_id in sorted(set(ref_ids)):
+                metadata = citation_metadata.get(ref_id, {})
+                formatted_cites.append(format_citation(ref_id, metadata))
+            cite_label = ", ".join(formatted_cites)
+        else:
+            cite_label = "review article" if h["source_type"] == "review" else "cited paper"
+
         heading = h["heading"] or "(no heading)"
 
         sents = top_sentences(question, h["text"], n)
@@ -415,30 +538,34 @@ def main():
     cur = conn.cursor()
     try:
         hits = search(cur, query_vec, args.top_k, args.min_score)
+
+        if not hits:
+            print("No results found above the minimum score threshold.")
+            print("Try lowering --min-score or broadening your question.")
+            return
+
+        # Sort hits by domain (medical first) for organized presentation to LLM
+        # while preserving the score-based retrieval quality
+        hits.sort(key=lambda h: (h.get('domain', 'unknown'), -h['score']))
+
+        if args.show_chunks:
+            print_hits(hits)
+
+        # Step 3 — build context
+        context = build_context(hits)
+
+        # Step 4 — generate answer
+        print(f"Generating answer with {args.chat_model} ...")
+        answer = generate_answer(question, context, args.chat_model)
+
+        print_answer(answer)
+
+        # Step 5 (optional) — verbatim BM25 quotes
+        if args.quote:
+            print_quotes(hits, question, args.quote_n, cur)
     finally:
         cur.close()
         conn.close()
-
-    if not hits:
-        print("No results found above the minimum score threshold.")
-        print("Try lowering --min-score or broadening your question.")
-        return
-
-    if args.show_chunks:
-        print_hits(hits)
-
-    # Step 3 — build context
-    context = build_context(hits)
-
-    # Step 4 — generate answer
-    print(f"Generating answer with {args.chat_model} ...")
-    answer = generate_answer(question, context, args.chat_model)
-
-    print_answer(answer)
-
-    # Step 5 (optional) — verbatim BM25 quotes
-    if args.quote:
-        print_quotes(hits, question, args.quote_n)
 
 
 if __name__ == "__main__":
