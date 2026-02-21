@@ -112,6 +112,9 @@ class HeadingDetector:
             r'^Page \d+',
             r'^\w+\s+\w+\s+\|\s+Volume',  # Journal headers
             r'nature\s+(methods|communications|genetics)',
+            r'^OPEN$',  # Open access badge
+            r'^Scientific Reports\s*\|',
+            r'^www\.nature\.com',
         ]
 
         if any(re.match(pat, text, re.IGNORECASE) for pat in blacklist):
@@ -126,6 +129,42 @@ class HeadingDetector:
                                    ['we developed', 'we applied', 'we can', 'here we']):
             return False, 0
 
+        # NEW: Skip sentence fragments and complete sentences
+        # Allow headings with periods if they're short and look like headings
+        if text.endswith('.') and not text.endswith('etc.'):
+            # If very long (>80 chars), likely a sentence not a heading
+            if len(text) > 80:
+                return False, 0
+
+            # Check if this looks like a heading vs a sentence
+            # For short text (<60 chars), just check if first word is capitalized (sentence-case headings OK)
+            # For longer text, require more capitalization (title-case)
+            words = text[:-1].split()  # Remove period
+            if len(words) > 0 and len(text) > 60:
+                capitalized_count = sum(1 for w in words if w[0].isupper())
+                # If less than 30% words capitalized AND >60 chars, likely a sentence
+                if capitalized_count < len(words) * 0.3:
+                    return False, 0
+
+        # Skip if contains multiple sentence indicators (commas + verbs)
+        sentence_indicators = [
+            r'\b(can be|was|were|are|is|has|have|had)\b',  # Verbs in sentences
+            r'\b(the|a|an)\s+\w+\s+(of|for|in|to|with)\b',  # Article + noun + preposition
+            r',\s+\w+\s+(and|or|but)\s+\w+',  # Complex clauses
+        ]
+
+        if text.count(',') >= 1 and any(re.search(pat, text, re.IGNORECASE) for pat in sentence_indicators):
+            return False, 0
+
+        # Skip text that looks like it's part of a paragraph (lowercase start after initial word)
+        # Only apply this to longer text (>80 chars) since sentence-case headings are common
+        words = text.split()
+        if len(words) > 8 and len(text) > 80:
+            # Check if later words are lowercase (indicates sentence, not title-case heading)
+            lowercase_count = sum(1 for w in words[1:] if w[0].islower() and len(w) > 2)
+            if lowercase_count > len(words) * 0.7:  # More than 70% lowercase AND long
+                return False, 0
+
         # Font style indicators
         is_bold = "Bold" in font
         is_semibold = "Semibold" in font
@@ -136,24 +175,52 @@ class HeadingDetector:
         small_heading = (is_bold or is_semibold) and size >= self.body_text_size  # Level 3
 
         # Pattern-based detection (common section names)
-        heading_patterns = [
-            r'^(Abstract|Introduction|Background|Methods?|Results?|Discussion|Conclusion)',
-            r'^(Materials? and Methods?|Experimental Procedures?)',
-            r'^(Acknowledgements?|References|Supplementary|Appendix)',
-            r'^(Data Availability|Author Contributions?|Competing Interests?|Additional Information)',
-            r'^(Ethics|Sample|DNA|Library|Sequencing|Benchmarking|Analysis)',
-            r'^(Online content|Code availability)',
-            r'^\d+[.\s]+[A-Z]',  # "1. Introduction" or "1 Methods"
+        # Level 1: Top-level canonical sections
+        canonical_sections = [
+            r'^Abstract$',
+            r'^Introduction$',
+            r'^Background$',
+            r'^Methods?$',
+            r'^Materials? and Methods?$',
+            r'^Experimental Procedures?$',
+            r'^Results?$',
+            r'^Discussion$',
+            r'^Conclusions?$',
+            r'^Acknowledgements?$',
+            r'^References$',
+            r'^References and Notes$',
+            r'^Supplementary Information$',
+            r'^Data Availability$',
+            r'^Author Contributions?$',
+            r'^Competing Interests?$',
+            r'^Additional Information$',
+            r'^Code availability$',
+            r'^Online content$',
         ]
 
-        matches_pattern = any(re.match(pat, text, re.IGNORECASE) for pat in heading_patterns)
+        # Level 2/3: Subsections (more flexible patterns)
+        subsection_patterns = [
+            r'^\d+[.\s]+[A-Z]',  # "1. Sample collection" or "1 Methods"
+            r'^[A-Z][a-z]+(\s+[a-zA-Z]+){0,8}[\.\:]?$',  # Title case phrases (max 9 words) - allow uppercase words
+            r'^(Sample|DNA|RNA|Library|Sequencing|Benchmarking|Analysis|Statistical)',
+            r'^(Tick|Patient|Clinical|Diagnostic|Experimental)',
+            r'^(16S|Nanopore|Illumina|MinION|ONT)',  # Technology names
+            r'^(Evaluation|Performance|Characterization)',  # Analysis/results sections
+        ]
 
-        # Level determination
-        if large_heading and (matches_pattern or is_bold):
+        matches_canonical = any(re.match(pat, text, re.IGNORECASE) for pat in canonical_sections)
+        matches_subsection = any(re.match(pat, text, re.IGNORECASE) for pat in subsection_patterns)
+
+        # Level determination - REQUIRE pattern matching for all levels
+        # Only accept text that looks like a genuine heading
+        if matches_canonical and (large_heading or medium_heading or (is_bold and size >= self.body_text_size)):
+            # Canonical sections can be level 1
             return True, 1
-        elif medium_heading and (matches_pattern or is_semibold):
+        elif matches_subsection and medium_heading and (is_bold or is_semibold):
+            # Subsections must be medium size AND bold/semibold
             return True, 2
-        elif small_heading and matches_pattern:
+        elif matches_subsection and small_heading:
+            # Small subsections
             return True, 3
 
         return False, 0
@@ -307,6 +374,7 @@ class PDFSectionExtractor:
             print(f"Processing pages {start_page + 1} to {end_page + 1} (article boundaries detected)")
 
         in_references = False  # Flag to skip content after References heading
+        found_first_section = False  # Skip everything before first canonical section (Abstract/Intro)
 
         for page_num in range(start_page, end_page + 1):
             page = self.doc[page_num]
@@ -342,6 +410,29 @@ class PDFSectionExtractor:
                         )
 
                         if is_heading:
+                            # Check if this is the first canonical section
+                            # Accept Abstract, Introduction, Results, Methods, or Discussion as start
+                            # This marks the start of actual content (skip title region)
+                            first_section_patterns = [
+                                r'^Abstract$',
+                                r'^Introduction$',
+                                r'^Results?$',
+                                r'^Methods?$',
+                                r'^Materials? and Methods?$',
+                                r'^Discussion$',
+                            ]
+
+                            if not found_first_section and any(re.match(pat, line_text, re.IGNORECASE) for pat in first_section_patterns):
+                                found_first_section = True
+                                if self.debug:
+                                    print(f"[Page {page_num + 1}] Found first section: {line_text} - starting content extraction")
+
+                            # Skip headings before first canonical section (title fragments)
+                            if not found_first_section:
+                                if self.debug:
+                                    print(f"[Page {page_num + 1}] Skipping pre-content heading: {line_text}")
+                                continue
+
                             # Check if this is the References section - stop processing after this
                             if re.match(r'\b(References|REFERENCES|References and Notes|Literature Cited)\b', line_text):
                                 in_references = True
@@ -387,8 +478,8 @@ class PDFSectionExtractor:
                                 break
 
                         else:
-                            # Regular text - append to current section (but not if we're in references)
-                            if current_section and not in_references:
+                            # Regular text - append to current section (but not if we're in references or pre-content)
+                            if current_section and not in_references and found_first_section:
                                 current_section["text"] += line_text + " "
 
                 # Break out of block loop if we hit references
