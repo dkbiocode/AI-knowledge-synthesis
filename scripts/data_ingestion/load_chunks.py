@@ -144,12 +144,15 @@ def load_chunks(cur, source_id: int, chunks: list[dict],
                 embeddings_map: dict, ref_id_to_db_id: dict) -> int:
     """
     Insert review_chunks and chunk_citations rows.
-    embeddings_map: dict keyed by section_id -> embedding list (may be empty)
+    embeddings_map: dict keyed by section_id (PMC) or index (PDF) -> embedding list
     Returns count of chunks inserted.
     """
     inserted = 0
-    for chunk in chunks:
-        emb = embeddings_map.get(chunk["section_id"])
+    for idx, chunk in enumerate(chunks):
+        # Try section_id first (PMC), fall back to index (PDF)
+        section_id = chunk.get("section_id")
+        emb_key = section_id if section_id is not None else idx
+        emb = embeddings_map.get(emb_key)
         emb_str = f"[{','.join(str(x) for x in emb)}]" if emb else None
         emb_model = chunk.get("embedding_model") if emb else None
         tokens_used = chunk.get("tokens_used") if emb else None
@@ -235,13 +238,16 @@ def main():
     parser.add_argument("--pdf-path", default="fcimb-14-1458316.pdf")
 
     args = parser.parse_args()
-    script_dir = os.path.dirname(os.path.abspath(__file__))
 
+    # Resolve paths relative to current working directory (not script directory)
     def resolve(p):
-        return p if (p is None or os.path.isabs(p)) else os.path.join(script_dir, p)
+        """Resolve path: absolute paths unchanged, relative paths from CWD."""
+        if p is None:
+            return None
+        return p if os.path.isabs(p) else os.path.abspath(p)
 
     chunks_path = resolve(args.chunks)
-    refs_path   = resolve(args.refs) if args.refs else None
+    refs_path   = resolve(args.refs)
     emb_path    = resolve(args.embeddings)
 
     # Check chunks file exists
@@ -276,15 +282,29 @@ def main():
     else:
         print("No references file provided — chunks will be loaded without citation metadata.")
 
-    # Build embeddings map: section_id -> embedding vector
+    # Build embeddings map
+    # For PMC chunks: map by section_id
+    # For PDF sections: map by index (chunks and embeddings are in same order)
     embeddings_map = {}
     if emb_path and os.path.exists(emb_path):
         print(f"Loading {emb_path} ...")
         with open(emb_path) as f:
             emb_data = json.load(f)
-        for item in emb_data:
-            if "embedding" in item and item.get("section_id"):
-                embeddings_map[item["section_id"]] = item["embedding"]
+
+        # Detect format: PMC (has section_id) vs PDF (no section_id)
+        has_section_ids = any("section_id" in item for item in emb_data)
+
+        if has_section_ids:
+            # PMC format: map by section_id
+            for item in emb_data:
+                if "embedding" in item and item.get("section_id"):
+                    embeddings_map[item["section_id"]] = item["embedding"]
+        else:
+            # PDF format: map by index
+            for idx, item in enumerate(emb_data):
+                if "embedding" in item:
+                    embeddings_map[idx] = item["embedding"]
+
         print(f"  {len(embeddings_map)} embeddings loaded.")
     else:
         print("No embeddings file provided — chunks will be loaded without embeddings.")

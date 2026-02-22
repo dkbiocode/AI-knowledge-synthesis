@@ -76,9 +76,18 @@ def embed_chunks(chunks: list[dict], model: str) -> list[dict]:
     for i, chunk in enumerate(chunks):
         # Support both "text" (from PDF parser) and "full_text" (from PMC extractor)
         text = chunk.get("full_text") or chunk.get("text", "")
-        if not text:
-            print(f"  [warn] chunk '{chunk.get('heading', 'unknown')}' has no text, skipping")
-            continue
+
+        # For empty parent sections (level 1 headings with no text), use heading as text
+        if not text or not text.strip():
+            heading = chunk.get("heading", "")
+            if heading:
+                text = heading  # Embed just the heading for structural sections
+                if len(text) > 0:
+                    print(f"  [info] chunk '{heading[:50]}' has no body text, using heading only")
+            else:
+                print(f"  [warn] chunk has no text or heading, skipping")
+                continue
+
         tokens = estimate_tokens(text)
 
         # Truncate if over limit
@@ -119,13 +128,12 @@ def main():
                         help="Create embedding without asking")
     args = parser.parse_args()
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    in_path = args.input if os.path.isabs(args.input) \
-        else os.path.join(script_dir, args.input)
+    # Resolve paths relative to current working directory (not script directory)
+    in_path = args.input if os.path.isabs(args.input) else os.path.abspath(args.input)
 
     if not os.path.exists(in_path):
         sys.exit(f"Input file not found: {in_path}\n"
-                 "Run chunk_article.py first to generate chunks.json")
+                 "Run chunk_article.py or parse_pdf_article.py first to generate chunks.json")
 
     with open(in_path, encoding="utf-8") as fh:
         data = json.load(fh)
@@ -163,8 +171,8 @@ def main():
     actual_tokens = sum(c.get("tokens_used", 0) for c in embedded)
     print(f"\nActual tokens used: {actual_tokens:,}")
 
-    out_path = args.output if os.path.isabs(args.output) \
-        else os.path.join(script_dir, args.output)
+    # Resolve output path relative to current working directory
+    out_path = args.output if os.path.isabs(args.output) else os.path.abspath(args.output)
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(embedded, fh, indent=2, ensure_ascii=False)
     print(f"Embeddings saved to {out_path}")
