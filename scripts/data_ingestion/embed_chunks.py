@@ -46,7 +46,9 @@ def print_cost_estimate(chunks: list[dict], model: str) -> int:
     print("-" * 70)
     total = 0
     for i, c in enumerate(chunks):
-        t = c.get("token_estimate") or estimate_tokens(c["full_text"])
+        # Support both "text" (from PDF parser) and "full_text" (from PMC extractor)
+        text_content = c.get("full_text") or c.get("text", "")
+        t = c.get("token_estimate") or estimate_tokens(text_content)
         total += t
         truncated = " [WILL TRUNCATE]" if t > TOKEN_LIMIT else ""
         print(f"{i+1:<4} {t:<9} {c['heading'][:50]}{truncated}")
@@ -72,7 +74,11 @@ def embed_chunks(chunks: list[dict], model: str) -> list[dict]:
 
     embedded = []
     for i, chunk in enumerate(chunks):
-        text = chunk["full_text"]
+        # Support both "text" (from PDF parser) and "full_text" (from PMC extractor)
+        text = chunk.get("full_text") or chunk.get("text", "")
+        if not text:
+            print(f"  [warn] chunk '{chunk.get('heading', 'unknown')}' has no text, skipping")
+            continue
         tokens = estimate_tokens(text)
 
         # Truncate if over limit
@@ -122,7 +128,18 @@ def main():
                  "Run chunk_article.py first to generate chunks.json")
 
     with open(in_path, encoding="utf-8") as fh:
-        chunks = json.load(fh)
+        data = json.load(fh)
+
+    # Handle both formats:
+    # - List of chunks (from PMC extractor): [{"heading": ..., "full_text": ...}, ...]
+    # - Dict with sections (from PDF parser): {"sections": [...], "metadata": {...}}
+    if isinstance(data, list):
+        chunks = data
+    elif isinstance(data, dict) and "sections" in data:
+        chunks = data["sections"]
+    else:
+        sys.exit(f"Unexpected JSON format in {in_path}\n"
+                 "Expected either a list of chunks or dict with 'sections' key")
 
     print(f"Loaded {len(chunks)} chunks from {in_path}")
     total_tokens = print_cost_estimate(chunks, args.model)

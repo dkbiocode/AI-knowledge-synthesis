@@ -209,8 +209,8 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--chunks", default="chunks.json",
                         help="chunks.json from chunk_article.py (default: chunks.json)")
-    parser.add_argument("--refs", default="reference_index.json",
-                        help="reference_index.json from chunk_article.py (default: reference_index.json)")
+    parser.add_argument("--refs", default=None,
+                        help="reference_index.json from chunk_article.py (optional for PDFs without references)")
     parser.add_argument("--embeddings", default=None,
                         help="embeddings.json from embed_chunks.py (optional)")
     parser.add_argument("--dbname", default="mngs_kb",
@@ -241,21 +241,40 @@ def main():
         return p if (p is None or os.path.isabs(p)) else os.path.join(script_dir, p)
 
     chunks_path = resolve(args.chunks)
-    refs_path   = resolve(args.refs)
+    refs_path   = resolve(args.refs) if args.refs else None
     emb_path    = resolve(args.embeddings)
 
-    for path, name in [(chunks_path, "chunks"), (refs_path, "reference index")]:
-        if not os.path.exists(path):
-            sys.exit(f"{name} file not found: {path}\nRun chunk_article.py first.")
+    # Check chunks file exists
+    if not os.path.exists(chunks_path):
+        sys.exit(f"Chunks file not found: {chunks_path}\nRun chunk_article.py or parse_pdf_article.py first.")
 
-    # Load JSON files
+    # Load chunks JSON (may be list or dict with 'sections' key)
     print(f"Loading {chunks_path} ...")
     with open(chunks_path) as f:
-        chunks = json.load(f)
+        chunks_data = json.load(f)
 
-    print(f"Loading {refs_path} ...")
-    with open(refs_path) as f:
-        reference_index = json.load(f)
+    # Handle both formats:
+    # - List of chunks (from PMC extractor): [{"heading": ..., "full_text": ...}, ...]
+    # - Dict with sections (from PDF parser): {"sections": [...], "metadata": {...}}
+    if isinstance(chunks_data, list):
+        chunks = chunks_data
+        json_metadata = {}
+    elif isinstance(chunks_data, dict) and "sections" in chunks_data:
+        chunks = chunks_data["sections"]
+        json_metadata = chunks_data.get("metadata", {})
+        print(f"  Loaded metadata from JSON: {json_metadata.get('title', 'N/A')[:60]}")
+    else:
+        sys.exit(f"Unexpected JSON format in {chunks_path}\n"
+                 "Expected either a list of chunks or dict with 'sections' key")
+
+    # Load references if provided
+    reference_index = {}
+    if refs_path and os.path.exists(refs_path):
+        print(f"Loading {refs_path} ...")
+        with open(refs_path) as f:
+            reference_index = json.load(f)
+    else:
+        print("No references file provided — chunks will be loaded without citation metadata.")
 
     # Build embeddings map: section_id -> embedding vector
     embeddings_map = {}
@@ -277,18 +296,18 @@ def main():
     cur = conn.cursor()
 
     try:
-        # Upsert source record
+        # Build metadata: prefer JSON metadata, fall back to command-line args
         meta = {
-            "title":      args.title,
-            "authors":    args.authors,
-            "journal":    args.journal,
-            "year":       args.year,
-            "doi":        args.doi,
-            "pmc_id":     args.pmc_id,
-            "open_access": True,   # Frontiers is OA
-            "domain":     args.domain,
-            "html_path":  args.html_path,
-            "pdf_path":   args.pdf_path,
+            "title":       json_metadata.get("title") or args.title,
+            "authors":     json_metadata.get("authors") or args.authors,
+            "journal":     json_metadata.get("journal") or args.journal,
+            "year":        json_metadata.get("year") or args.year,
+            "doi":         json_metadata.get("doi") or args.doi,
+            "pmc_id":      json_metadata.get("pmc_id") or args.pmc_id,
+            "open_access": json_metadata.get("open_access", True),  # Default to True
+            "domain":      args.domain,  # Always use command-line for domain
+            "html_path":   args.html_path,
+            "pdf_path":    args.pdf_path,
         }
         source_id = upsert_review_source(cur, args.doc_key, meta)
         print(f"  review_sources id = {source_id}")
@@ -296,10 +315,14 @@ def main():
         if args.replace:
             clear_existing(cur, source_id)
 
-        # Load citations
-        print(f"  Loading {len(reference_index)} citations ...")
-        ref_id_to_db_id = load_citations(cur, source_id, reference_index)
-        print(f"  Citations loaded.")
+        # Load citations (if available)
+        ref_id_to_db_id = {}
+        if reference_index:
+            print(f"  Loading {len(reference_index)} citations ...")
+            ref_id_to_db_id = load_citations(cur, source_id, reference_index)
+            print(f"  Citations loaded.")
+        else:
+            print(f"  No citations to load (references file not provided).")
 
         # Load chunks + chunk_citations
         print(f"  Loading {len(chunks)} chunks ...")

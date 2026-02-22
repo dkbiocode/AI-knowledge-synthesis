@@ -269,18 +269,130 @@ class PDFSectionExtractor:
         print()
 
     def extract_metadata(self) -> Dict:
-        """Extract PDF metadata."""
+        """Extract PDF metadata with enhanced parsing."""
         meta = self.doc.metadata
+
+        # Parse journal and DOI from subject field (common in scientific PDFs)
+        # Format: "Journal Name, https://doi.org/..."
+        subject = meta.get("subject", "")
+        journal = ""
+        doi = ""
+
+        if subject:
+            # Split on comma to separate journal from DOI
+            parts = subject.split(",", 1)
+            if len(parts) >= 1:
+                journal = parts[0].strip()
+            if len(parts) >= 2:
+                # Extract DOI from URL or text
+                doi_part = parts[1].strip()
+                doi_match = re.search(r'10\.\d{4,}/[^\s,]+', doi_part)
+                if doi_match:
+                    doi = doi_match.group(0)
+
+        # Try to extract full author list from first page
+        authors_full = self._extract_authors_from_page()
+
+        # Fall back to metadata if extraction fails
+        if not authors_full:
+            authors_full = meta.get("author", "")
 
         return {
             "title": meta.get("title", ""),
-            "authors": meta.get("author", ""),
-            "subject": meta.get("subject", ""),
+            "authors": authors_full,
+            "journal": journal,
+            "doi": doi,
+            "subject": subject,  # Keep original for reference
             "keywords": meta.get("keywords", ""),
             "creator": meta.get("creator", ""),
             "created": meta.get("creationDate", ""),
             "pages": len(self.doc),
         }
+
+    def _extract_authors_from_page(self) -> str:
+        """
+        Extract full author list from first page.
+
+        Authors typically appear after the title and before the abstract,
+        with superscript numbers indicating affiliations.
+        """
+        if len(self.doc) == 0:
+            return ""
+
+        page = self.doc[0]
+        text = page.get_text()
+        lines = text.split('\n')
+
+        # Look for author pattern: "Name1 1*, Name2 2, Name3 3 & Name4 1,2"
+        # Usually within first 30 lines, may span 2-3 consecutive lines
+        authors = []
+        in_author_block = False
+
+        for i, line in enumerate(lines[:30]):
+            line = line.strip()
+
+            # Skip empty lines, page numbers, journal headers
+            if not line or line.isdigit() or len(line) < 10:
+                if in_author_block:
+                    # Empty line after authors = end of author block
+                    break
+                continue
+
+            # Skip common header patterns
+            if any(x in line for x in ['http://', 'www.', 'DOI:', 'Vol.:', '(2023)', 'Scientific Reports']):
+                continue
+
+            # Author line characteristics:
+            # - Has commas and/or ampersand
+            # - Has capital letters (names) and numbers (affiliations)
+            # - NOT a sentence (no common verbs)
+            # - Reasonable length
+            has_ampersand = '&' in line
+            has_commas = line.count(',') >= 1
+            has_numbers = bool(re.search(r'\d', line))
+            reasonable_length = 20 < len(line) < 150
+
+            # Check if this is likely an author line
+            is_author_like = (has_commas or has_ampersand) and reasonable_length
+
+            if is_author_like:
+                # Additional filter: should not be a sentence (check for whole words only)
+                sentence_words = ['\\bare\\b', '\\bis\\b', '\\bwas\\b', '\\bwere\\b', '\\bthe\\b', '\\bthis\\b',
+                                  '\\bthat\\b', '\\bproviding\\b', '\\bcan\\b', '\\bfor\\b', '\\bin\\b', '\\bwith\\b']
+                is_sentence = any(re.search(word, line, re.IGNORECASE) for word in sentence_words)
+
+                # Must have capital letters indicating names
+                capital_words = [w for w in line.split() if w and len(w) > 1 and w[0].isupper()]
+
+                if not is_sentence and len(capital_words) >= 2:
+                    # This looks like an author line
+                    # Clean up: remove affiliation numbers and asterisks
+                    cleaned = re.sub(r'\s*\d+[\*,]*\s*', ' ', line)
+                    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                    # Remove trailing commas
+                    cleaned = cleaned.rstrip(',').strip()
+
+                    authors.append(cleaned)
+                    in_author_block = True
+                elif in_author_block:
+                    # Was in author block but this doesn't look like authors
+                    break
+
+            # Long line after authors = abstract/body text
+            elif in_author_block and len(line) > 100:
+                break
+
+        # Combine author lines and clean up
+        if authors:
+            full_authors = ' '.join(authors)
+            # Clean up spacing around commas and ampersands
+            full_authors = re.sub(r'\s*,\s*', ', ', full_authors)
+            full_authors = re.sub(r'\s*&\s*', ' & ', full_authors)
+            full_authors = re.sub(r',\s*,+', ',', full_authors)  # Remove double commas
+            full_authors = re.sub(r'\s+', ' ', full_authors)  # Normalize spaces
+            return full_authors.strip()
+
+        return ""
 
     def detect_article_boundaries(self, title: str = None) -> Tuple[int, int]:
         """
