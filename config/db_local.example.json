@@ -1,0 +1,9 @@
+{
+  "name": "local",
+  "description": "Local Homebrew PostgreSQL database",
+  "host": "localhost",
+  "port": 5432,
+  "database": "mngs_kb",
+  "user": "your_username",
+  "password": "your_password"
+}

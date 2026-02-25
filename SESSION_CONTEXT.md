@@ -215,41 +215,95 @@ Interpretation:
 - Admin content filtering enabled by default
 - OpenAI embedding generation integrated
 
-#### 7. PDF Processing (NEW)
+#### 7. PDF Processing (NEW) - Complete Workflow
 
-**Tools for parsing PDF articles when PMC HTML format unavailable:**
+**Full pipeline for non-PMC articles (when HTML format unavailable):**
 
-**General PDF parser:**
-- `parse_pdf_article.py` - Font-based section detection for structured scientific articles
-  - Analyzes font sizes and styles to identify headings
-  - Hierarchical section structure (levels 1-3)
-  - Blacklist filtering for headers/footers
-  - Article boundary detection (title to references)
-  - Supports multiple output formats (JSON, sections, tree, full text)
-  - Usage: `python parse_pdf_article.py PDFs/nature_methods.pdf --output-format json`
+**Enhanced PDF parser (`parse_pdf_article.py`):**
+- **Improved section detection** - Canonical section recognition (Abstract, Methods, Results, etc.)
+  - Filters sentence fragments and false positives (title text, headers, etc.)
+  - Detects parent sections and subsections (hierarchical structure)
+  - Skips content before first canonical section (title region exclusion)
+  - Handles sentence-case subsection headings (common in scientific papers)
+- **Automatic metadata extraction:**
+  - Full author list from first page (removes affiliation numbers)
+  - Journal name from subject field
+  - DOI extraction from metadata
+  - Year, title, creator, page count
+- **Output format:**
+  - JSON with `{"sections": [...], "metadata": {...}}` structure
+  - Compatible with `embed_chunks.py` and `load_chunks.py`
+  - No manual --title, --authors, --journal needed!
+- **Usage:** `python parse_pdf_article.py --pdf article.pdf --output sections.json`
+- **Example output:**
+  ```json
+  {
+    "metadata": {
+      "title": "Metagenomic surveillance for bacterial tick-borne pathogens...",
+      "authors": "Evan J. Kipp Laramie L. Lindsey... & Peter A. Larsen",
+      "journal": "Scientific Reports",
+      "doi": "10.1038/s41598-023-37134-9"
+    },
+    "sections": [
+      {"heading": "Results", "level": 1, "text": "", "parent_heading": null},
+      {"heading": "Tick sampling and sequencing strategies.", "level": 2,
+       "text": "...", "parent_heading": "Results"}
+    ]
+  }
+  ```
+
+**Enhanced embedding tool (`embed_chunks.py`):**
+- **Format compatibility:**
+  - Handles both PMC format (list with `full_text`) and PDF format (dict with `sections` and `text`)
+  - Auto-detects input format
+  - Empty parent sections handled (uses heading text for embedding)
+- **Relative path support:** Paths resolved from current working directory
+- **Usage:** `python embed_chunks.py --input sections.json --output embeddings.json`
+
+**Enhanced database loader (`load_chunks.py`):**
+- **Metadata auto-loading:**
+  - Reads title, authors, journal, DOI from JSON metadata
+  - Falls back to command-line args if needed
+  - Only --doc-key and --domain required for PDFs
+- **Format compatibility:**
+  - Auto-detects PMC (section_id-based) vs PDF (index-based) embeddings
+  - References optional (--refs not required for PDFs without citations)
+- **Usage:** `python load_chunks.py --chunks sections.json --embeddings embeddings.json --doc-key my_article --domain veterinary`
+
+**Complete PDF workflow (3 steps):**
+```bash
+# Step 1: Parse PDF into sections (extracts metadata automatically)
+python scripts/utilities/parse_pdf_article.py \
+  --pdf data/raw/PDFs/article.pdf \
+  --output data/raw/PDFs/article_sections.json
+
+# Step 2: Generate embeddings
+python scripts/data_ingestion/embed_chunks.py \
+  --input data/raw/PDFs/article_sections.json \
+  --output data/raw/PDFs/article_embeddings.json
+
+# Step 3: Load to database (metadata read from JSON!)
+python scripts/data_ingestion/load_chunks.py \
+  --chunks data/raw/PDFs/article_sections.json \
+  --embeddings data/raw/PDFs/article_embeddings.json \
+  --doc-key my_article_key \
+  --domain veterinary
+```
 
 **Specialized Science journal parser:**
-- `parse_science_pdf.py` - Handles Science journal PDFs with unique characteristics
-  - DOI extraction from filename, metadata, or PDF text
-  - Multi-article PDF handling with previous article skip
-  - Paragraph-based section splitting (default)
-  - Smart heading generation from first sentence
-  - Header/footer cleaning
-  - Supports --no-paragraphs flag for single section mode
+- `parse_science_pdf.py` - Handles Science journal PDFs (paragraph-based sections)
+  - DOI extraction, multi-article handling, header/footer cleaning
   - Usage: `python parse_science_pdf.py PDFs/science.1181498.pdf --output-format json`
 
-**Key features:**
-- PyMuPDF (fitz) for PDF text extraction with font metadata
-- Paragraph splitting at sentence boundaries (max 3,000 chars per section)
-- DOI-based article boundary detection for multi-article files
-- Preserves paragraph structure for downstream chunking
-- Multiple output formats: json, sections, tree, full
+**Key improvements (2026-02-21):**
+- ✅ Automatic author/journal/DOI extraction (no manual metadata entry)
+- ✅ Canonical section detection (prevents title/header fragments)
+- ✅ Full PMC/PDF format compatibility across all tools
+- ✅ Relative path support (works from any directory)
+- ✅ Index-based embedding lookup for PDF sections (no section_id required)
+- ✅ Empty parent section handling (embeds heading text)
 
-**Limitations:**
-- Font-based detection may miss sections with inconsistent formatting
-- Science parser specialized for Science journal format only
-- Title extraction relies on PDF metadata or filename patterns
-- Multi-article PDFs require DOI markers for proper separation
+**Tested on:** `sci_reports_ont_tickborne.pdf` (13 sections loaded successfully)
 
 ---
 

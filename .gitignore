@@ -51,6 +51,8 @@ download_log.json
 # Database dumps
 *.sql.gz
 *.dump
+*_dump.sql
+mngs_kb_dump.sql
 
 # Temporary files
 *.tmp
@@ -69,3 +71,5 @@ temp/
 # Keep example/template files
 !example-*.txt
 !*-template.*
+!config/*.example.json
+!config/README.md

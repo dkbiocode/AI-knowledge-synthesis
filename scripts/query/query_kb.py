@@ -43,20 +43,25 @@ import textwrap
 
 import psycopg2
 
+# Add parent directory to path for config import
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from config.db_config import get_connection
+
 
 # ---------------------------------------------------------------------------
-# Connection  (same pattern as load_chunks.py)
+# Connection  (updated to use config module)
 # ---------------------------------------------------------------------------
 
-def get_conn(dbname: str):
-    params = {
-        "host":     os.environ.get("PGHOST", "localhost"),
-        "port":     int(os.environ.get("PGPORT", 5432)),
-        "user":     os.environ.get("PGUSER", os.environ.get("USER", "")),
-        "password": os.environ.get("PGPASSWORD", ""),
-        "dbname":   dbname,
-    }
-    return psycopg2.connect(**{k: v for k, v in params.items() if v != ""})
+def get_conn(db_config: str = "local"):
+    """Get database connection using config module.
+
+    Args:
+        db_config: Configuration name ('local' or 'supabase'). Default: 'local'
+
+    Returns:
+        psycopg2 connection object
+    """
+    return get_connection(db_config)
 
 
 # ---------------------------------------------------------------------------
@@ -506,8 +511,8 @@ def main():
                         help="OpenAI embedding model (default: text-embedding-3-small)")
     parser.add_argument("--chat-model", default="gpt-4o-mini",
                         help="OpenAI chat model for answer generation (default: gpt-4o-mini)")
-    parser.add_argument("--dbname", default="mngs_kb",
-                        help="Database name (default: mngs_kb)")
+    parser.add_argument("--db-config", default="local",
+                        help="Database configuration: 'local' or 'supabase' (default: local)")
     parser.add_argument("--show-chunks", action="store_true",
                         help="Print retrieved chunks before the answer")
     parser.add_argument("--quote", action="store_true",
@@ -534,7 +539,7 @@ def main():
 
     # Step 2 — search
     print(f"Searching (top_k={args.top_k}, min_score={args.min_score}) ...")
-    conn = get_conn(args.dbname)
+    conn = get_conn(args.db_config)
     cur = conn.cursor()
     try:
         hits = search(cur, query_vec, args.top_k, args.min_score)

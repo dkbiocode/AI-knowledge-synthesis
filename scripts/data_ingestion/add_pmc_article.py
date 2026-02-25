@@ -35,6 +35,10 @@ import psycopg2
 import requests
 from psycopg2.extras import execute_values
 
+# Import PubMed metadata fetcher
+sys.path.insert(0, str(Path(__file__).parent.parent / "utilities"))
+from fetch_pubmed_metadata import fetch_metadata
+
 
 PMC_BASE_URL = "https://pmc.ncbi.nlm.nih.gov/articles"
 
@@ -155,6 +159,42 @@ def clear_paper_chunks(cur, paper_id: int):
     """Delete existing paper_chunks for this paper."""
     cur.execute("DELETE FROM paper_chunks WHERE paper_id = %s", (paper_id,))
     return cur.rowcount
+
+
+def update_pubmed_metadata(cur, paper_id: int, pubmed_id: str) -> bool:
+    """
+    Fetch abstract and keywords from PubMed and update paper.
+    Returns True if successful, False otherwise.
+    """
+    if not pubmed_id:
+        return False
+
+    print(f"\nFetching metadata from PubMed (PMID: {pubmed_id})...")
+    try:
+        metadata = fetch_metadata(pubmed_id)
+        if metadata:
+            cur.execute("""
+                UPDATE papers
+                SET abstract = %s,
+                    mesh_terms = %s,
+                    author_keywords = %s
+                WHERE id = %s
+            """, (
+                metadata['abstract'],
+                metadata['mesh_terms'],
+                metadata['author_keywords'],
+                paper_id,
+            ))
+            print(f"  ✓ Abstract: {'Yes' if metadata['abstract'] else 'No'}")
+            print(f"  ✓ MeSH terms: {len(metadata['mesh_terms'])}")
+            print(f"  ✓ Author keywords: {len(metadata['author_keywords'])}")
+            return True
+        else:
+            print(f"  ✗ Failed to fetch metadata")
+            return False
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        return False
 
 
 def insert_paper_chunks(cur, paper_id: int, chunks: list[dict]) -> int:
@@ -469,6 +509,10 @@ def main():
         # Upsert paper
         paper_id = upsert_paper(cur, pmc_id, metadata, args.domain)
         print(f"\nPaper upserted: paper_id={paper_id}")
+
+        # Fetch and update PubMed metadata (abstract, keywords)
+        if metadata.get("pubmed_id"):
+            update_pubmed_metadata(cur, paper_id, metadata["pubmed_id"])
 
         # Insert chunks
         print(f"Loading {len(chunks)} chunks into database...")

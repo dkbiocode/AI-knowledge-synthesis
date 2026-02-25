@@ -19,6 +19,11 @@ import streamlit as st
 import psycopg2
 from typing import List, Dict, Set
 
+# Add project root to path
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 # Import functions from query_kb.py
 from scripts.query.query_kb import (
     embed_query,
@@ -30,8 +35,12 @@ from scripts.query.query_kb import (
     generate_answer,
 )
 
-# Import query analyzer
-from src.query_analyzer import analyze_query_specificity, format_analysis_message
+# Import query analyzer (may not exist yet - make optional)
+try:
+    from src.query_analyzer import analyze_query_specificity, format_analysis_message
+    HAS_ANALYZER = True
+except ImportError:
+    HAS_ANALYZER = False
 
 
 # Page configuration
@@ -275,7 +284,12 @@ def main():
         )
 
         st.subheader("Database")
-        dbname = st.text_input("Database name", "mngs_kb")
+        db_config = st.selectbox(
+            "Database configuration",
+            ["local", "supabase"],
+            index=0,
+            help="local: Homebrew PostgreSQL (localhost:5432) | supabase: Supabase local (127.0.0.1:54322)"
+        )
 
         st.divider()
         st.markdown("""
@@ -330,7 +344,7 @@ def main():
 
         with st.spinner(f"Searching database (top {top_k} chunks)..."):
             try:
-                conn = get_conn(dbname)
+                conn = get_conn(db_config)
                 cur = conn.cursor()
 
                 hits = search(cur, query_vec, top_k, min_score)
