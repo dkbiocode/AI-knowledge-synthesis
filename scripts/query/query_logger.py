@@ -29,9 +29,15 @@ Usage:
 """
 
 import psycopg2
+import os
+import sys
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
+
+# Add parent directory to path for config import
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from config.db_config import get_connection
 
 
 def log_query(
@@ -320,7 +326,7 @@ if __name__ == "__main__":
 
     # Initialize
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-    conn = psycopg2.connect("dbname=mngs_kb")
+    conn = get_connection()  # Uses default 'local' config
     cursor = conn.cursor()
 
     # Example: Log a complex query with decomposition

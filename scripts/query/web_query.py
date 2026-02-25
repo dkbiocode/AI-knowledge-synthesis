@@ -35,6 +35,13 @@ from scripts.query.query_kb import (
     generate_answer,
 )
 
+# Import query logger
+from scripts.query.query_logger import (
+    log_query,
+    find_similar_queries,
+    get_recent_queries
+)
+
 # Import query analyzer (may not exist yet - make optional)
 try:
     from src.query_analyzer import analyze_query_specificity, format_analysis_message
@@ -291,6 +298,42 @@ def main():
             help="local: Homebrew PostgreSQL (localhost:5432) | supabase: Supabase local (127.0.0.1:54322)"
         )
 
+        st.subheader("Query Logging")
+        enable_logging = st.checkbox("Log queries", value=True,
+                                     help="Save queries to database for history and similarity search")
+        show_similar = st.checkbox("Show similar past queries", value=True,
+                                   help="Display similar queries from history")
+
+        # Query History Section
+        if enable_logging:
+            st.divider()
+            st.subheader("📜 Query History")
+
+            # Show recent queries for this session
+            try:
+                conn_hist = get_conn(db_config)
+                cur_hist = conn_hist.cursor()
+                recent = get_recent_queries(
+                    cur_hist,
+                    limit=10,
+                    session_id=st.session_state.session_id
+                )
+                cur_hist.close()
+                conn_hist.close()
+
+                if recent:
+                    st.markdown(f"*{len(recent)} queries in this session*")
+                    for rq in recent[:5]:  # Show top 5
+                        time_str = rq['created_at'].strftime('%H:%M:%S')
+                        query_preview = rq['query_text'][:50]
+                        if len(rq['query_text']) > 50:
+                            query_preview += "..."
+                        st.markdown(f"- `{time_str}` {query_preview}")
+                else:
+                    st.markdown("*No queries yet this session*")
+            except Exception as e:
+                st.markdown(f"*Could not load history: {e}*")
+
         st.divider()
         st.markdown("""
         ### About
@@ -309,6 +352,9 @@ def main():
         st.session_state.answer = None
     if 'current_query' not in st.session_state:
         st.session_state.current_query = None
+    if 'session_id' not in st.session_state:
+        import uuid
+        st.session_state.session_id = str(uuid.uuid4())
 
     # Main content
     st.title("🧬 NGS Knowledge Base Query Interface")
@@ -341,6 +387,46 @@ def main():
             except Exception as e:
                 st.error(f"Error embedding query: {e}")
                 return
+
+        # Log query and find similar queries
+        if enable_logging or show_similar:
+            try:
+                conn_log = get_conn(db_config)
+                cur_log = conn_log.cursor()
+
+                # Find similar past queries
+                if show_similar:
+                    similar_queries = find_similar_queries(
+                        cur_log,
+                        query_vec,
+                        limit=5,
+                        similarity_threshold=0.75
+                    )
+
+                    if similar_queries:
+                        with st.expander(f"💡 Found {len(similar_queries)} similar past queries", expanded=False):
+                            for sq in similar_queries:
+                                similarity_pct = sq['similarity'] * 100
+                                st.markdown(
+                                    f"**{similarity_pct:.1f}% similar** ({sq['created_at'].strftime('%Y-%m-%d %H:%M')}): "
+                                    f"{sq['query_text']}"
+                                )
+
+                # Log the current query
+                if enable_logging:
+                    log_query(
+                        cur_log,
+                        query_text=query.strip(),
+                        embedding=query_vec,
+                        is_complex=False,  # Could integrate with decomposition later
+                        session_id=st.session_state.session_id
+                    )
+                    conn_log.commit()
+
+                cur_log.close()
+                conn_log.close()
+            except Exception as e:
+                st.warning(f"Query logging error: {e}")
 
         with st.spinner(f"Searching database (top {top_k} chunks)..."):
             try:

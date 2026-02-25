@@ -66,6 +66,7 @@ temp/
 !README.md
 !SESSION_CONTEXT.md
 !USAGE_GUIDE.md
+!QUERY_LOGGING.md
 !requirements.txt
 
 # Keep example/template files
