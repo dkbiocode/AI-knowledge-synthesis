@@ -62,6 +62,7 @@ temp/
 
 # Keep important files
 !sql/*.sql
+!sql/README.md
 !docs/*.md
 !README.md
 !SESSION_CONTEXT.md
