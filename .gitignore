@@ -76,3 +76,4 @@ temp/
 !config/*.example.json
 !config/README.md
 .Rproj.user
+.Rhistory
