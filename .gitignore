@@ -75,3 +75,4 @@ temp/
 !*-template.*
 !config/*.example.json
 !config/README.md
+.Rproj.user
