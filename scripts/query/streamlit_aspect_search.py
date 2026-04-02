@@ -87,16 +87,27 @@ cols = st.columns(len(example_queries))
 for i, col in enumerate(cols):
     if col.button(f"Example {i+1}", key=f"ex_{i}", use_container_width=True):
         st.session_state.query = example_queries[i]
+        st.rerun()  # Force immediate rerun to update text input
 
-# Query input
+# Debug: Show session state (remove this after fixing)
+with st.expander("🔍 Debug: Session State", expanded=False):
+    st.write("Session state keys:", list(st.session_state.keys()))
+    st.write("query:", st.session_state.get('query', 'NOT SET'))
+    st.write("query_input:", st.session_state.get('query_input', 'NOT SET'))
+
+# Initialize query in session state if not present
+if 'query' not in st.session_state:
+    st.session_state.query = example_queries[0]
+
+# Query input - NO KEY, so value parameter controls what's displayed
+# When buttons update st.session_state.query and rerun, this will show the new value
 query = st.text_input(
     "Enter your query:",
-    value=st.session_state.get('query', example_queries[0]),
-    help="Ask a question about NGS diagnostic methods",
-    key="query_input"
+    value=st.session_state.query,
+    help="Ask a question about NGS diagnostic methods"
 )
 
-# Update session state
+# Update session state when user types (query will differ from stored value)
 st.session_state.query = query
 
 # Search button
@@ -118,7 +129,7 @@ if st.button("🔍 Search", type="primary", use_container_width=True):
                 html_results = search_with_highlights(
                     query=query,
                     limit=num_results,
-                    db_name="mngs_kb",
+                    db_config="supabase",
                     domain=domain
                 )
 

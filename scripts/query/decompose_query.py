@@ -127,7 +127,7 @@ def decompose_query(query: str, model: str = DECOMPOSITION_MODEL) -> Dict[str, A
         temperature=0.3  # Lower temperature for more consistent decomposition
     )
 
-    result = json.loads(response.choices[0].message.content)
+    result = json.loads(str(response.choices[0].message.content))
 
     # Add original query to result
     result["original_query"] = query
