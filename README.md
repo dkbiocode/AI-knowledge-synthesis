@@ -26,7 +26,7 @@
 
 This is a matter of getting the text, dividing it into digestable chunks (intro, results, methods, discussion), and embedding it. This step translates the text into the model and is accomplished via API calls to openAI. 
 
-![](figures/diagram_integration_cycle.png)
+![schematic of the data integration process](figures/diagram_integration_cycle.png)
 
 ### Query Cycle
 
@@ -34,7 +34,7 @@ Following the idea of Retrieval Augmented Generation (RAG), the query model take
 
 Another addition to the standard approach is my embedding at two levels of granuarity. If a query facet matches a paper section, then a secondary database search is done at the sentence level to find "source text" underlying the match at the broader level.
 
-![](figures/diagram_query_cycle.png)
+![schematic of the query approach](figures/diagram_query_cycle.png)
 
 ## Analysis of Knowledge Synthesis
 
@@ -48,7 +48,7 @@ Since each embedded chunk is translated to a vector in the AI model's reduced sp
 
 Chunks (cells) are clustered in the principle components space with louvain clustering, visualized via UMAP, and analyzed for representative terms.
 
-![](img_for_juan.png)
+![UMAP showing louvain clusters](figures/UMAP.png)
 
 #### Cluster breakdown
 
