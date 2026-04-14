@@ -22,7 +22,6 @@ ENV/
 
 # Data files (large, generated, or sensitive)
 data/
-figures/
 *.json
 *.tsv
 !requirements.json
